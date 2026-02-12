@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request
+VERIFY_TOKEN = os.getenv("verify_token", "lux_verify_123")
+VERIFY_TOKEN = os.getenv("verify_token", "lux_verify_123")from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 import os
 
