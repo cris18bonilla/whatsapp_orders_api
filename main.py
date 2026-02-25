@@ -1,709 +1,739 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import PlainTextResponse
-import os, time, re, unicodedata
+
+import os
+import time
+import re
 import requests
+from typing import Dict, Any, Optional
 
-app = FastAPI(title="WhatsApp Orders API")
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse, JSONResponse
 
-# ===== ENV (Render) =====
+app = FastAPI()
+
+# =========================
+# ENV
+# =========================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "lux_verify_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
-ADMIN_PHONE = os.getenv("ADMIN_PHONE", "")  # ej: 50586907134 (sin +)
-GRAPH_VERSION = os.getenv("GRAPH_VERSION", "v22.0")
-SESSION_TTL_MIN = int(os.getenv("SESSION_TTL_MIN", "20"))
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")  # Meta -> "Identificador de número de teléfono"
+GRAPH_URL = "https://graph.facebook.com/v22.0"
 
-# ===== INFO NEGOCIO =====
-BUSINESS_LOCATION = "De la entrada de las fuentes 5c y media al sur mano izquierda"
-BUSINESS_HOURS = "9:00 a.m. a 10:00 p.m."
+# =========================
+# MENÚ
+# =========================
+MENU_COMIDA = [
+    ("Pollo tapado", 150),
+    ("Bisteck", 180),
+    ("Carne desmenuzada", 180),
+    ("Pollo asado", 200),
+    ("Nacatamal", 80),
+    ("Carne asada", 200),
+    ("Arroz a la valenciana", 150),
+    ("Baho", 200),
+]
 
-# ===== MENÚ REAL =====
-MENU = {
-    "comida": [
-        {"id": "c1", "name": "Pollo tapado", "price": 150},
-        {"id": "c2", "name": "Bisteck", "price": 180},
-        {"id": "c3", "name": "Carne desmenuzada", "price": 180},
-        {"id": "c4", "name": "Pollo asado", "price": 200},
-        {"id": "c5", "name": "Nacatamal", "price": 80},
-        {"id": "c6", "name": "Carne asada", "price": 200},
-        {"id": "c7", "name": "Arroz a la valenciana", "price": 150},
-        {"id": "c8", "name": "Baho", "price": 200},
-    ],
-    "bebidas": [
-        {"id": "b1", "name": "Jamaica", "price": 35},
-        {"id": "b2", "name": "Guayaba", "price": 35},
-        {"id": "b3", "name": "Cálala", "price": 35},
-        {"id": "b4", "name": "Naranja", "price": 35},
-        {"id": "b5", "name": "Cebada", "price": 35},
-        {"id": "b6", "name": "Cacao", "price": 60},
-    ],
-}
+MENU_BEBIDAS = [
+    ("Jamaica", 35),
+    ("Guayaba", 35),
+    ("Cálala", 35),
+    ("Naranja", 35),
+    ("Cebada", 35),
+    ("Cacao", 60),
+]
 
-# ===== Sesiones en memoria (demo) =====
-# SESSIONS[sender] = {
-#   step, expires_at, warned_expiry,
-#   cart: [{id,name,price,qty}],
-#   current_map: { "1": item_id, ... },  # para selección por número
-#   pending_item_id, pending_item_name,
-#   customer_name, delivery, address, pay_method,
-#   human_mode
+DIRECCION = "De la entrada de las fuentes 5c y media al sur mano izquierda"
+HORARIO = "9:00 a.m. a 10:00 p.m."
+
+# =========================
+# SESIONES (memoria en RAM)
+# =========================
+SESSION_TTL_SEC = 20 * 60  # 20 min
+
+# sessions[wa_id] = {
+#   "ts": last_update,
+#   "state": "...",
+#   "cart": { "c1": {"name":..., "price":..., "qty":...}, ... },
+#   "tmp": {...}
 # }
-SESSIONS = {}
+sessions: Dict[str, Dict[str, Any]] = {}
 
-# ---------- Utils ----------
-def now_ts():
-    return time.time()
 
-def ttl_seconds():
-    return SESSION_TTL_MIN * 60
+def now() -> int:
+    return int(time.time())
 
-def normalize(s: str) -> str:
-    s = s.lower().strip()
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+
+def get_session(user_id: str) -> Dict[str, Any]:
+    s = sessions.get(user_id)
+    if not s:
+        s = {"ts": now(), "state": "HOME", "cart": {}, "tmp": {}}
+        sessions[user_id] = s
+        return s
+
+    # Expiración
+    if now() - s.get("ts", 0) > SESSION_TTL_SEC:
+        s = {"ts": now(), "state": "HOME", "cart": {}, "tmp": {}}
+        sessions[user_id] = s
+        return s
+
+    s["ts"] = now()
     return s
 
-def money(n: int) -> str:
-    return f"C${n}"
 
-def cart_total(cart) -> int:
-    return sum(i["price"] * i["qty"] for i in cart)
+def reset_session(user_id: str):
+    sessions[user_id] = {"ts": now(), "state": "HOME", "cart": {}, "tmp": {}}
 
-def find_item_by_id(item_id: str):
-    for cat in MENU.values():
-        for it in cat:
-            if it["id"] == item_id:
-                return it
-    return None
 
-def search_items_in_text(text: str):
-    """Detecta nombres de productos dentro del texto (muy simple)."""
-    t = normalize(text)
-    hits = []
-    for cat in MENU.values():
-        for it in cat:
-            name_norm = normalize(it["name"])
-            if name_norm in t:
-                hits.append(it)
-    # quitar duplicados por id
-    uniq = {}
-    for h in hits:
-        uniq[h["id"]] = h
-    return list(uniq.values())
-
-def extract_qty(text: str):
-    """Si el usuario escribe '2 baho', intenta sacar el 2."""
-    m = re.search(r"\b(\d{1,2})\b", normalize(text))
-    if not m:
-        return None
-    q = int(m.group(1))
-    return q if 1 <= q <= 50 else None
-
-# ---------- WhatsApp API helpers ----------
-def wa_url(path: str) -> str:
-    return f"https://graph.facebook.com/{GRAPH_VERSION}/{path}"
-
+# =========================
+# WhatsApp SEND helpers
+# =========================
 def wa_headers():
-    return {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    return {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
 
-def send_text(to: str, body: str):
-    url = wa_url(f"{PHONE_NUMBER_ID}/messages")
-    data = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}}
-    r = requests.post(url, headers=wa_headers(), json=data)
-    print("SEND_TEXT:", r.status_code, r.text)
+
+def wa_post(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return {"error": "Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID"}
+    url = f"{GRAPH_URL}/{PHONE_NUMBER_ID}/messages"
+    r = requests.post(url, headers=wa_headers(), json=payload, timeout=20)
+    try:
+        return r.json()
+    except Exception:
+        return {"status_code": r.status_code, "text": r.text}
+
+
+def send_text(to: str, text: str):
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "text",
+        "text": {"body": text},
+    }
+    return wa_post(payload)
+
 
 def send_buttons(to: str, body: str, buttons: list):
-    """buttons: [{"id": "...", "title": "..."}] (máx 3 botones por mensaje en WhatsApp Cloud)"""
-    url = wa_url(f"{PHONE_NUMBER_ID}/messages")
-    data = {
+    # buttons: [{"id": "...", "title": "..."}] max 3
+    payload = {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "interactive",
         "interactive": {
             "type": "button",
             "body": {"text": body},
-            "action": {"buttons": [{"type": "reply", "reply": b} for b in buttons]},
+            "action": {
+                "buttons": [
+                    {"type": "reply", "reply": {"id": b["id"], "title": b["title"]}}
+                    for b in buttons
+                ]
+            },
         },
     }
-    r = requests.post(url, headers=wa_headers(), json=data)
-    print("SEND_BUTTONS:", r.status_code, r.text)
+    return wa_post(payload)
 
-def send_list(to: str, body: str, button_label: str, rows: list, section_title="Opciones"):
-    url = wa_url(f"{PHONE_NUMBER_ID}/messages")
-    data = {
+
+def send_list(to: str, body: str, button_text: str, sections: list):
+    # sections = [{"title": "...", "rows":[{"id":"...", "title":"...", "description":"..."}]}]
+    payload = {
         "messaging_product": "whatsapp",
         "to": to,
         "type": "interactive",
         "interactive": {
             "type": "list",
             "body": {"text": body},
-            "action": {"button": button_label, "sections": [{"title": section_title, "rows": rows}]},
+            "action": {"button": button_text, "sections": sections},
         },
     }
-    r = requests.post(url, headers=wa_headers(), json=data)
-    print("SEND_LIST:", r.status_code, r.text)
+    return wa_post(payload)
 
-def notify_admin(body: str):
-    if ADMIN_PHONE:
-        send_text(ADMIN_PHONE, body)
 
-# ---------- Session ----------
-def touch_session(sender: str):
-    sess = SESSIONS.get(sender) or {
-        "step": "idle",
-        "cart": [],
-        "current_map": {},
-        "human_mode": False,
-        "warned_expiry": False,
-    }
-    sess["expires_at"] = now_ts() + ttl_seconds()
-    SESSIONS[sender] = sess
-    return sess
-
-def is_expired(sess):
-    return sess.get("expires_at") and now_ts() > sess["expires_at"]
-
-def maybe_warn_expiry(sender: str, sess: dict):
-    remaining = int(sess.get("expires_at", 0) - now_ts())
-    if remaining <= 180 and not sess.get("warned_expiry"):
-        sess["warned_expiry"] = True
-        SESSIONS[sender] = sess
-        send_text(sender, "⏳ Ojo: tu orden se reiniciará pronto por inactividad. Si seguís, respondé cualquier cosa (ej: *menu*).")
-
-def reset_session(sender: str):
-    SESSIONS.pop(sender, None)
-
-# ---------- UI building ----------
-def show_main_menu(sender: str):
-    # Botones (3) + texto con números
-    send_buttons(
-        sender,
-        "👋 Bienvenido a *El Merol de Pancho*.\n\n"
-        "Opciones (podés tocar o escribir el número):\n"
-        "1) Ver menú\n2) Hacer pedido\n3) Ver carrito\n"
-        "4) Ubicación y horario\n5) Asesor\n6) Borrar orden",
-        [
-            {"id": "MM_1", "title": "1) Menú"},
-            {"id": "MM_2", "title": "2) Pedir"},
-            {"id": "MM_3", "title": "3) Carrito"},
-        ],
+# =========================
+# UI builders
+# =========================
+def home_menu(to: str):
+    body = (
+        "👋 *Bienvenido a El Merol de Pancho.*\n\n"
+        "Opciones (tocá o escribí el número):\n"
+        "1) Menú\n"
+        "2) Pedir\n"
+        "3) Carrito\n"
+        "4) Ubicación y horario\n"
+        "5) Asesor\n"
+        "6) Borrar orden"
     )
-    # Segundo mensaje para completar opciones (porque solo caben 3 botones)
-    send_buttons(
-        sender,
-        "Más opciones:\n4) Ubicación y horario\n5) Asesor\n6) Borrar orden",
-        [
-            {"id": "MM_4", "title": "4) Ubicación"},
-            {"id": "MM_5", "title": "5) Asesor"},
-            {"id": "MM_6", "title": "6) Borrar"},
-        ],
-    )
+    # Botones (3 máx) -> mandamos 2 tandas para cubrir todo sin saturar
+    send_buttons(to, body, [
+        {"id": "HOME_MENU", "title": "1) Menú"},
+        {"id": "HOME_PEDIR", "title": "2) Pedir"},
+        {"id": "HOME_CARRITO", "title": "3) Carrito"},
+    ])
+    send_buttons(to, "Más opciones:", [
+        {"id": "HOME_UBI", "title": "4) Ubicación"},
+        {"id": "HOME_ASESOR", "title": "5) Asesor"},
+        {"id": "HOME_BORRAR", "title": "6) Borrar"},
+    ])
 
-def show_categories(sender: str, title="📋 Elegí una categoría"):
-    rows = [
-        {"id": "CAT_comida", "title": "1) Comida", "description": "Platos principales"},
-        {"id": "CAT_bebidas", "title": "2) Bebidas", "description": "Frescos y cacao"},
-    ]
-    send_list(sender, f"{title}\n\n(También podés escribir 1 o 2)", "Ver categorías", rows, "Categorías")
 
-def show_items(sender: str, sess: dict, cat_key: str):
-    items = MENU.get(cat_key, [])
-    # Mapa numérico para escribir "1,2,3..."
-    current_map = {}
+def categorias_menu(to: str, title: str = "Elegí categoría"):
+    # Un solo list, sin texto duplicado
+    sections = [{
+        "title": "Categorías",
+        "rows": [
+            {"id": "CAT_COMIDA", "title": "1) Comida", "description": "Platos principales"},
+            {"id": "CAT_BEBIDAS", "title": "2) Bebidas", "description": "Frescos y cacao"},
+        ]
+    }]
+    send_list(to, f"📋 *{title}*", "Ver categorías", sections)
+
+
+def productos_list(to: str, categoria: str):
+    if categoria == "COMIDA":
+        items = MENU_COMIDA
+        prefix = "c"
+        title = "📌 COMIDA (tocá un producto)"
+    else:
+        items = MENU_BEBIDAS
+        prefix = "b"
+        title = "📌 BEBIDAS (tocá un producto)"
+
     rows = []
-    text_lines = [f"📌 *{cat_key.upper()}* (tocá o escribí el número)\n"]
-    for idx, it in enumerate(items, start=1):
-        num = str(idx)
-        current_map[num] = it["id"]
+    for i, (name, price) in enumerate(items, start=1):
         rows.append({
-            "id": f"IT_{it['id']}",
-            "title": f"{idx}) {it['name']}",
-            "description": f"{money(it['price'])}  | código: {it['id']}"
+            "id": f"PROD_{prefix}{i}",
+            "title": f"{i}) {name} — C${price}",
+            "description": f"Escribí: {i} (o {prefix}{i})"
         })
-        text_lines.append(f"{idx}) {it['name']} — {money(it['price'])}  | Escribí: {idx} (o {it['id']})")
 
-    text_lines.append("\n🧺 Comandos: *carrito* / *pagar* / *menu*")
-    sess["current_map"] = current_map
-    sess["step"] = "choose_item"
-    sess["category"] = cat_key
-    SESSIONS[sender] = sess
+    sections = [{"title": "Productos", "rows": rows}]
+    send_list(to, title, "Ver productos", sections)
 
-    send_list(sender, "\n".join(text_lines[:4]) + ("\n\n(abrí la lista para ver todo)" if len(items) > 3 else ""), "Ver productos", rows, "Productos")
-    send_text(sender, "\n".join(text_lines))  # texto completo con números + códigos
 
-def ask_qty(sender: str, sess: dict, item: dict):
-    sess["pending_item_id"] = item["id"]
-    sess["pending_item_name"] = item["name"]
-    sess["pending_item_price"] = item["price"]
-    sess["step"] = "quantity"
-    SESSIONS[sender] = sess
+def qty_stepper(to: str, product_name: str, qty: int, hint: str = ""):
+    # Regleta con 3 botones
+    body = f"🧮 *{product_name}*\nCantidad: *{qty}*"
+    if hint:
+        body += f"\n{hint}"
+    send_buttons(to, body, [
+        {"id": "QTY_MINUS", "title": "➖"},
+        {"id": "QTY_ADD", "title": "✅ Agregar"},
+        {"id": "QTY_PLUS", "title": "➕"},
+    ])
 
-    send_buttons(
-        sender,
-        f"¿Cuántos querés de *{item['name']}*?\n(Tocá o escribí 1–4. Para otra, toca 'Otra')",
-        [
-            {"id": "Q_1", "title": "1"},
-            {"id": "Q_2", "title": "2"},
-            {"id": "Q_3", "title": "3"},
-        ],
-    )
-    send_buttons(
-        sender,
-        "Más cantidades:",
-        [
-            {"id": "Q_4", "title": "4"},
-            {"id": "Q_OTHER", "title": "Otra"},
-            {"id": "CART_VIEW", "title": "Carrito"},
-        ],
-    )
 
-def show_after_add(sender: str):
-    send_buttons(
-        sender,
-        "✅ Agregado.\n¿Qué hacemos ahora?",
-        [
-            {"id": "ADD_MORE", "title": "➕ Agregar más"},
-            {"id": "CART_VIEW", "title": "🧺 Ver carrito"},
-            {"id": "GO_PAY", "title": "💳 Pagar"},
-        ],
-    )
+def post_add_actions(to: str):
+    send_buttons(to, "✅ Agregado.\n¿Qué hacemos ahora?", [
+        {"id": "AFTER_ADD_MORE", "title": "➕ Agregar otro"},
+        {"id": "AFTER_ADD_CART", "title": "🧺 Ver carrito"},
+        {"id": "AFTER_ADD_PAY", "title": "💳 Pagar"},
+    ])
 
-def show_cart(sender: str, sess: dict):
-    cart = sess["cart"]
+
+def show_ubi(to: str):
+    send_text(to, f"📍 *Ubicación*\n{DIRECCION}\n\n🕘 *Horario*\n{HORARIO}")
+
+
+def show_asesor(to: str):
+    # Esto no transfiere “realmente” el chat, solo avisa y deja al humano responder manualmente.
+    send_text(to, "🧑‍💼 Perfecto. Un asesor te escribe en breve por este mismo número.\n\n(Escribí tu consulta aquí 👇)")
+
+
+def cart_text(session: Dict[str, Any]) -> str:
+    cart = session["cart"]
     if not cart:
-        send_text(sender, "🧺 Tu carrito está vacío. Escribí *menu* para ver opciones.")
-        return
+        return "🧺 Tu carrito está vacío.\n\nPodés tocar *2) Pedir* para iniciar."
     lines = ["🧺 *Tu carrito:*"]
-    for i, it in enumerate(cart, start=1):
-        lines.append(f"{i}) {it['qty']} x {it['name']} — {money(it['price'])} c/u")
-    lines.append(f"\n*Total:* {money(cart_total(cart))}")
-    lines.append("\nOpciones: 1) Eliminar  2) Vaciar  3) Pagar  4) Menú")
-    send_text(sender, "\n".join(lines))
-    send_buttons(
-        sender,
-        "Acciones del carrito:",
-        [
-            {"id": "C_ELIM", "title": "1) Eliminar"},
-            {"id": "C_VAC", "title": "2) Vaciar"},
-            {"id": "GO_PAY", "title": "3) Pagar"},
-        ],
-    )
-    send_buttons(
-        sender,
-        "Más:",
-        [
-            {"id": "MM_1", "title": "4) Menú"},
-            {"id": "MM_5", "title": "Asesor"},
-            {"id": "MM_6", "title": "Borrar"},
-        ],
-    )
+    total = 0
+    idx = 1
+    for code, it in cart.items():
+        qty = it["qty"]
+        price = it["price"]
+        subtotal = qty * price
+        total += subtotal
+        lines.append(f"{idx}) {qty} x {it['name']} — C${price} c/u")
+        idx += 1
+    lines.append(f"\n*Total: C${total}*")
+    return "\n".join(lines)
 
-def show_remove_list(sender: str, sess: dict):
-    cart = sess["cart"]
+
+def cart_actions(to: str, session: Dict[str, Any]):
+    send_text(to, cart_text(session))
+    send_buttons(to, "Acciones del carrito:", [
+        {"id": "CART_EDIT", "title": "1) Editar"},
+        {"id": "CART_CLEAR", "title": "2) Vaciar"},
+        {"id": "CART_PAY", "title": "3) Pagar"},
+    ])
+    send_buttons(to, "Más:", [
+        {"id": "CART_MENU", "title": "4) Menú"},
+        {"id": "HOME_ASESOR", "title": "Asesor"},
+        {"id": "HOME_BORRAR", "title": "Borrar"},
+    ])
+
+
+def cart_pick_item(to: str, session: Dict[str, Any]):
+    cart = session["cart"]
     if not cart:
-        send_text(sender, "🧺 Tu carrito está vacío.")
+        send_text(to, "Tu carrito está vacío.")
+        home_menu(to)
         return
+
     rows = []
-    # Mapa numérico para eliminar por número
-    rm_map = {}
-    for idx, it in enumerate(cart, start=1):
-        rm_map[str(idx)] = idx - 1
+    idx_map = []
+    idx = 1
+    for code, it in cart.items():
         rows.append({
-            "id": f"RM_{idx-1}",
-            "title": f"{idx}) {it['qty']} x {it['name']}",
-            "description": f"{money(it['price'])} c/u"
+            "id": f"EDIT_{code}",
+            "title": f"{idx}) {it['name']}",
+            "description": f"Cantidad actual: {it['qty']}"
         })
-    sess["rm_map"] = rm_map
-    sess["step"] = "remove_item"
-    SESSIONS[sender] = sess
-    send_list(sender, "Elegí cuál eliminar (tocá o escribí el número)", "Eliminar", rows, "Carrito")
-    send_text(sender, "Escribí el número del ítem a eliminar (ej: 1) o toca en la lista.")
+        idx_map.append(code)
+        idx += 1
 
-def start_checkout(sender: str, sess: dict):
-    if not sess["cart"]:
-        send_text(sender, "🧺 Tu carrito está vacío. Escribí *menu* para empezar.")
+    sections = [{"title": "Elegí un item para ajustar", "rows": rows}]
+    send_list(to, "✏️ Editar carrito (tocá un item)", "Ver items", sections)
+
+
+def pay_start(to: str, session: Dict[str, Any]):
+    if not session["cart"]:
+        send_text(to, "🧺 Tu carrito está vacío. Primero agregá algo 🙂")
+        home_menu(to)
         return
-    sess["step"] = "ask_name"
-    SESSIONS[sender] = sess
-    send_text(sender, "📝 Para registrar tu pedido: ¿Cuál es tu *nombre*?")
+    session["state"] = "PAY_NAME"
+    send_text(to, "🧾 Para registrar tu pedido: ¿Cuál es tu *nombre*?")
 
-def ask_delivery(sender: str, sess: dict):
-    sess["step"] = "delivery"
-    SESSIONS[sender] = sess
-    send_buttons(
-        sender,
-        "¿Cómo será la entrega?\n(1) Delivery  (2) Retiro",
-        [
-            {"id": "DEL_1", "title": "1) Delivery"},
-            {"id": "DEL_2", "title": "2) Retiro"},
-            {"id": "CART_VIEW", "title": "Carrito"},
-        ],
-    )
 
-def ask_payment(sender: str, sess: dict):
-    sess["step"] = "pay_method"
-    SESSIONS[sender] = sess
-    send_buttons(
-        sender,
-        "¿Método de pago?\n(1) Efectivo  (2) Transferencia",
-        [
-            {"id": "PAY_1", "title": "1) Efectivo"},
-            {"id": "PAY_2", "title": "2) Transferencia"},
-            {"id": "CART_VIEW", "title": "Carrito"},
-        ],
-    )
+def total_cart(session: Dict[str, Any]) -> int:
+    total = 0
+    for it in session["cart"].values():
+        total += it["qty"] * it["price"]
+    return total
 
-def ask_confirm(sender: str, sess: dict):
-    cart = sess["cart"]
-    lines = ["✅ *Confirmación de pedido*"]
-    lines.append(f"👤 Nombre: {sess.get('customer_name','-')}")
-    lines.append("📦 Items:")
-    for it in cart:
-        lines.append(f"- {it['qty']} x {it['name']} ({money(it['price'])})")
-    lines.append(f"💰 Total: {money(cart_total(cart))}")
-    lines.append(f"🚚 Entrega: {sess.get('delivery','-')}")
-    if sess.get("delivery") == "delivery":
-        lines.append(f"📍 Dirección: {sess.get('address','-')}")
-    lines.append(f"💳 Pago: {sess.get('pay_method','-')}")
-    send_text(sender, "\n".join(lines))
-    sess["step"] = "confirm"
-    SESSIONS[sender] = sess
-    send_buttons(
-        sender,
-        "¿Confirmás el pedido?",
-        [
-            {"id": "CF_Y", "title": "1) Confirmar"},
-            {"id": "CF_N", "title": "2) Cancelar"},
-            {"id": "CART_VIEW", "title": "Carrito"},
-        ],
-    )
 
-# ---------- Webhooks ----------
+# =========================
+# PARSERS
+# =========================
+def normalize_text(t: str) -> str:
+    return re.sub(r"\s+", " ", (t or "").strip().lower())
+
+
+def parse_product_code_from_text(t: str, current_category: Optional[str]) -> Optional[str]:
+    # Permite: "1", "c1", "b6", etc.
+    tt = normalize_text(t)
+
+    # Si escribe "c1" o "b2"
+    m = re.fullmatch(r"([cb])\s*([1-9])", tt)
+    if m:
+        prefix = m.group(1)
+        num = int(m.group(2))
+        return f"{prefix}{num}"
+
+    # Si escribe solo número, usamos la categoría actual
+    m2 = re.fullmatch(r"([1-9])", tt)
+    if m2 and current_category in ("COMIDA", "BEBIDAS"):
+        num = int(m2.group(1))
+        prefix = "c" if current_category == "COMIDA" else "b"
+        return f"{prefix}{num}"
+
+    return None
+
+
+def get_product_by_code(code: str):
+    # code "c1".."c9" o "b1".."b9"
+    prefix = code[0]
+    idx = int(code[1:]) - 1
+    if prefix == "c" and 0 <= idx < len(MENU_COMIDA):
+        name, price = MENU_COMIDA[idx]
+        return {"code": code, "name": name, "price": price}
+    if prefix == "b" and 0 <= idx < len(MENU_BEBIDAS):
+        name, price = MENU_BEBIDAS[idx]
+        return {"code": code, "name": name, "price": price}
+    return None
+
+
+# =========================
+# WEBHOOK
+# =========================
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"ok": True}
+
 
 @app.get("/webhook/whatsapp")
-def verify_webhook(request: Request):
-    mode = request.query_params.get("hub.mode")
-    challenge = request.query_params.get("hub.challenge")
-    token = request.query_params.get("hub.verify_token")
+def verify(mode: str = "", challenge: str = "", verify_token: str = ""):
+    if mode == "subscribe" and verify_token == VERIFY_TOKEN:
+        return PlainTextResponse(challenge)
+    return PlainTextResponse("forbidden", status_code=403)
 
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return PlainTextResponse(content=challenge or "")
-    return {"error": "Verification failed"}
 
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
-    payload = await request.json()
-    print("INCOMING:", payload)
+async def webhook(request: Request):
+    data = await request.json()
 
     try:
-        value = payload["entry"][0]["changes"][0]["value"]
-        if "messages" not in value:
-            return {"ok": True}
+        entry = data.get("entry", [])[0]
+        change = entry.get("changes", [])[0]
+        value = change.get("value", {})
+        messages = value.get("messages", [])
 
-        msg = value["messages"][0]
-        sender = msg["from"]
+        if not messages:
+            return JSONResponse({"ok": True})
 
-        sess = SESSIONS.get(sender)
-        if sess and is_expired(sess):
-            reset_session(sender)
-            send_text(sender, "⏳ Se reinició tu sesión por inactividad. Escribí *hola* para empezar de nuevo.")
-            return {"ok": True}
+        msg = messages[0]
+        from_id = msg.get("from")  # wa_id del cliente
+        session = get_session(from_id)
 
-        sess = touch_session(sender)
-        maybe_warn_expiry(sender, sess)
+        # Captura texto o botón o lista
+        mtype = msg.get("type")
 
         text = ""
-        lower = ""
-        if msg.get("type") == "text":
-            text = msg["text"]["body"].strip()
-            lower = normalize(text)
+        interactive_id = None
+        if mtype == "text":
+            text = msg.get("text", {}).get("body", "")
+        elif mtype == "interactive":
+            inter = msg.get("interactive", {})
+            itype = inter.get("type")
+            if itype == "button_reply":
+                interactive_id = inter.get("button_reply", {}).get("id")
+            elif itype == "list_reply":
+                interactive_id = inter.get("list_reply", {}).get("id")
 
-        button_id = None
-        list_id = None
-        if msg.get("type") == "interactive":
-            interactive = msg["interactive"]
-            if interactive.get("type") == "button_reply":
-                button_id = interactive["button_reply"]["id"]
-            elif interactive.get("type") == "list_reply":
-                list_id = interactive["list_reply"]["id"]
-
-        # ===== MODO ASESOR =====
-        if sess.get("human_mode"):
-            if lower in ["salir", "menu", "hola"]:
-                sess["human_mode"] = False
-                sess["step"] = "idle"
-                SESSIONS[sender] = sess
-                show_main_menu(sender)
-                return {"ok": True}
-            if text:
-                notify_admin(f"🧑‍💼 *Asesor*\nCliente: {sender}\n\n{text}")
-                send_text(sender, "✅ Listo, le pasé tu mensaje al asesor. Para volver al menú: *salir*.")
-            return {"ok": True}
-
-        # ===== ATAJOS TEXTO =====
-        if lower in ["hola", "menu", "menú", "buenas", "buenos dias", "buenos días"]:
-            show_main_menu(sender)
-            return {"ok": True}
-
-        if lower == "carrito":
-            show_cart(sender, sess)
-            return {"ok": True}
-
-        if lower == "ubicacion" or lower == "ubicación" or lower == "horario":
-            send_text(sender, f"📍 Ubicación: {BUSINESS_LOCATION}\n🕒 Horario: {BUSINESS_HOURS}")
-            return {"ok": True}
-
-        # ===== MENÚ PRINCIPAL (botones o número) =====
-        def handle_main_option(opt: str):
-            if opt == "1":
-                show_categories(sender, "📋 Menú — elegí categoría")
-            elif opt == "2":
-                show_categories(sender, "🛒 Pedido — elegí categoría")
-            elif opt == "3":
-                show_cart(sender, sess)
-            elif opt == "4":
-                send_text(sender, f"📍 Ubicación: {BUSINESS_LOCATION}\n🕒 Horario: {BUSINESS_HOURS}")
-            elif opt == "5":
-                sess["human_mode"] = True
-                sess["step"] = "human"
-                SESSIONS[sender] = sess
-                notify_admin(f"🧑‍💼 *Asesor solicitado*\nCliente: {sender}")
-                send_text(sender, "🧑‍💼 Perfecto. Escribí tu consulta y se la paso al asesor.\nPara volver al menú: *salir*.")
-            elif opt == "6":
-                reset_session(sender)
-                send_text(sender, "🗑️ Orden borrada. Escribí *hola* para empezar.")
-            else:
-                show_main_menu(sender)
-
-        # botones main menu
-        if button_id and button_id.startswith("MM_"):
-            handle_main_option(button_id.replace("MM_", ""))
-            return {"ok": True}
-
-        # si el usuario escribe 1-6 (sin haber tocado nada)
-        if lower in ["1","2","3","4","5","6"] and sess.get("step") in ["idle","choose_item","remove_item","delivery","pay_method","confirm","ask_name","address"]:
-            # Si está en pasos específicos, no robar el 1/2/3; se procesa por step abajo.
-            if sess["step"] in ["idle"]:
-                handle_main_option(lower)
-                return {"ok": True}
-
-        # ===== LISTAS =====
-        if list_id and list_id.startswith("CAT_"):
-            cat = list_id.replace("CAT_", "")
-            show_items(sender, sess, cat)
-            return {"ok": True}
-
-        if list_id and list_id.startswith("IT_"):
-            item_id = list_id.replace("IT_", "")
-            item = find_item_by_id(item_id)
-            if item:
-                ask_qty(sender, sess, item)
-            else:
-                send_text(sender, "No encontré ese producto. Escribí *menu*.")
-            return {"ok": True}
-
-        if list_id and list_id.startswith("RM_"):
-            idx = int(list_id.replace("RM_", ""))
-            if 0 <= idx < len(sess["cart"]):
-                removed = sess["cart"].pop(idx)
-                SESSIONS[sender] = sess
-                send_text(sender, f"🗑️ Eliminado: {removed['qty']} x {removed['name']}")
-                show_cart(sender, sess)
-            else:
-                send_text(sender, "No pude eliminar ese ítem.")
-            return {"ok": True}
-
-        # ===== BOTONES DE CANTIDAD =====
-        if button_id and button_id.startswith("Q_"):
-            if button_id == "Q_OTHER":
-                sess["step"] = "quantity_other"
-                SESSIONS[sender] = sess
-                send_text(sender, "Escribí la cantidad (ej: 5).")
-                return {"ok": True}
-            qty = int(button_id.replace("Q_", ""))
-            item = find_item_by_id(sess.get("pending_item_id",""))
-            if not item:
-                send_text(sender, "Se perdió el producto. Volvé a *menu*.")
-                return {"ok": True}
-            sess["cart"].append({"id": item["id"], "name": item["name"], "price": item["price"], "qty": qty})
-            sess["step"] = "idle"
-            SESSIONS[sender] = sess
-            send_text(sender, f"✅ Agregado: {qty} x {item['name']}\nTotal: {money(cart_total(sess['cart']))}")
-            show_after_add(sender)
-            return {"ok": True}
-
-        # ===== ACCIONES POST-AGREGAR / CARRITO =====
-        if button_id == "ADD_MORE":
-            show_categories(sender, "➕ Elegí categoría para seguir agregando")
-            return {"ok": True}
-
-        if button_id == "CART_VIEW":
-            show_cart(sender, sess)
-            return {"ok": True}
-
-        if button_id == "GO_PAY":
-            start_checkout(sender, sess)
-            return {"ok": True}
-
-        if button_id == "C_ELIM":
-            show_remove_list(sender, sess)
-            return {"ok": True}
-
-        if button_id == "C_VAC":
-            sess["cart"] = []
-            sess["step"] = "idle"
-            SESSIONS[sender] = sess
-            send_text(sender, "🗑️ Carrito vaciado. Escribí *menu* para empezar.")
-            return {"ok": True}
-
-        # ===== CHECKOUT BOTONES =====
-        if button_id and button_id.startswith("DEL_"):
-            if button_id == "DEL_1":
-                sess["delivery"] = "delivery"
-                sess["step"] = "address"
-                SESSIONS[sender] = sess
-                send_text(sender, "📍 Escribí tu dirección o referencia.")
-            else:
-                sess["delivery"] = "retiro"
-                sess["step"] = "pay_method"
-                SESSIONS[sender] = sess
-                ask_payment(sender, sess)
-            return {"ok": True}
-
-        if button_id and button_id.startswith("PAY_"):
-            sess["pay_method"] = "efectivo" if button_id == "PAY_1" else "transferencia"
-            SESSIONS[sender] = sess
-            ask_confirm(sender, sess)
-            return {"ok": True}
-
-        if button_id and button_id.startswith("CF_"):
-            if button_id == "CF_N":
-                reset_session(sender)
-                send_text(sender, "Pedido cancelado ✅. Escribí *hola* para empezar.")
-                return {"ok": True}
-
-            # Confirmar
-            order_id = f"MP{int(now_ts())}"
-            lines = [f"📦 *Nuevo pedido* ({order_id})",
-                     f"👤 Nombre: {sess.get('customer_name','-')}",
-                     f"📱 Cliente: {sender}",
-                     "Items:"]
-            for it in sess["cart"]:
-                lines.append(f"- {it['qty']} x {it['name']} ({money(it['price'])})")
-            lines.append(f"Total: {money(cart_total(sess['cart']))}")
-            lines.append(f"Entrega: {sess.get('delivery','-')}")
-            if sess.get("delivery") == "delivery":
-                lines.append(f"Dirección: {sess.get('address','-')}")
-            lines.append(f"Pago: {sess.get('pay_method','-')}")
-            notify_admin("\n".join(lines))
-
-            reset_session(sender)
-            send_text(sender, "✅ Pedido recibido. En breve te confirmamos por aquí 🙌")
-            return {"ok": True}
-
-        # ===== STEPS (texto) =====
-        step = sess.get("step","idle")
-
-        # Texto libre: si menciona productos, guiar
-        if msg.get("type") == "text":
-            hits = search_items_in_text(text)
-            if hits and step == "idle":
-                # si encuentra 1 producto, preguntar cantidad
-                if len(hits) == 1:
-                    item = hits[0]
-                    q = extract_qty(text)
-                    if q:
-                        sess["cart"].append({"id": item["id"], "name": item["name"], "price": item["price"], "qty": q})
-                        SESSIONS[sender] = sess
-                        send_text(sender, f"✅ Entendí: {q} x {item['name']}. Total: {money(cart_total(sess['cart']))}")
-                        show_after_add(sender)
-                        return {"ok": True}
-                    ask_qty(sender, sess, item)
-                    return {"ok": True}
-                # si son varios, pedir que confirme por lista (más seguro)
-                send_text(sender, "Te entendí varios productos. Para evitar errores, mejor armémoslo por el menú 👇")
-                show_categories(sender, "Elegí categoría y vamos agregando uno por uno")
-                return {"ok": True}
-
-        # seleccionar categoría por número
-        if step in ["idle"] and lower in ["1","2"] and not button_id and not list_id:
-            # si el usuario escribió 1 o 2 sin abrir lista, interpretarlo como categoría
-            cat = "comida" if lower == "1" else "bebidas"
-            show_items(sender, sess, cat)
-            return {"ok": True}
-
-        if step == "choose_item":
-            # puede venir número o id (c6/b2)
-            if lower in sess.get("current_map", {}):
-                item_id = sess["current_map"][lower]
-            else:
-                item_id = lower  # permitir c6/b2
-            item = find_item_by_id(item_id)
-            if not item:
-                send_text(sender, "No entendí. Tocá un producto en la lista o escribí su número (ej: 1) o su código (ej: c6).")
-                return {"ok": True}
-            ask_qty(sender, sess, item)
-            return {"ok": True}
-
-        if step == "quantity_other":
-            try:
-                q = int(lower)
-                if q <= 0:
-                    raise ValueError()
-            except:
-                send_text(sender, "Cantidad inválida. Escribí un número (ej: 5).")
-                return {"ok": True}
-            item = find_item_by_id(sess.get("pending_item_id",""))
-            if not item:
-                send_text(sender, "Se perdió el producto. Volvé a *menu*.")
-                return {"ok": True}
-            sess["cart"].append({"id": item["id"], "name": item["name"], "price": item["price"], "qty": q})
-            sess["step"] = "idle"
-            SESSIONS[sender] = sess
-            send_text(sender, f"✅ Agregado: {q} x {item['name']}\nTotal: {money(cart_total(sess['cart']))}")
-            show_after_add(sender)
-            return {"ok": True}
-
-        if step == "remove_item":
-            # eliminar por número
-            if lower in sess.get("rm_map", {}):
-                idx = sess["rm_map"][lower]
-                if 0 <= idx < len(sess["cart"]):
-                    removed = sess["cart"].pop(idx)
-                    SESSIONS[sender] = sess
-                    send_text(sender, f"🗑️ Eliminado: {removed['qty']} x {removed['name']}")
-                    show_cart(sender, sess)
-                    return {"ok": True}
-            send_text(sender, "Elegí un ítem válido (tocá en la lista o escribí 1,2,3...).")
-            return {"ok": True}
-
-        if step == "ask_name":
-            name = text.strip()
-            if len(name) < 2:
-                send_text(sender, "Escribí tu nombre (mínimo 2 letras).")
-                return {"ok": True}
-            sess["customer_name"] = name
-            SESSIONS[sender] = sess
-            ask_delivery(sender, sess)
-            return {"ok": True}
-
-        if step == "address":
-            addr = text.strip()
-            if len(addr) < 5:
-                send_text(sender, "Poné una dirección o referencia más clara 🙂")
-                return {"ok": True}
-            sess["address"] = addr
-            SESSIONS[sender] = sess
-            ask_payment(sender, sess)
-            return {"ok": True}
-
-        # fallback
-        send_text(sender, "Escribí *hola* para ver el menú 😊")
-        return {"ok": True}
+        # ROUTER
+        await handle_message(from_id, session, text=text, interactive_id=interactive_id)
+        return JSONResponse({"ok": True})
 
     except Exception as e:
-        print("ERROR:", e)
-        return {"ok": True}
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=200)
+
+
+async def handle_message(user_id: str, session: Dict[str, Any], text: str = "", interactive_id: Optional[str] = None):
+    t = normalize_text(text)
+
+    # Atajos por texto
+    if t in ("menu", "menú"):
+        session["state"] = "HOME"
+        home_menu(user_id)
+        return
+    if t == "carrito":
+        session["state"] = "HOME"
+        cart_actions(user_id, session)
+        return
+    if t == "pagar":
+        pay_start(user_id, session)
+        return
+    if t == "borrar":
+        reset_session(user_id)
+        send_text(user_id, "🗑️ Orden borrada. Empecemos de nuevo 🙂")
+        home_menu(user_id)
+        return
+
+    # Si viene por botones/lista
+    if interactive_id:
+        await handle_interactive(user_id, session, interactive_id)
+        return
+
+    # Si viene texto normal, depende del estado
+    state = session.get("state", "HOME")
+
+    if state == "HOME":
+        # Permitir 1..6 por texto
+        if t == "1":
+            categorias_menu(user_id, "Menú — elegí categoría")
+        elif t == "2":
+            categorias_menu(user_id, "Pedir — elegí categoría")
+            session["tmp"]["intent"] = "ORDER"
+        elif t == "3":
+            cart_actions(user_id, session)
+        elif t == "4":
+            show_ubi(user_id)
+        elif t == "5":
+            show_asesor(user_id)
+        elif t == "6":
+            reset_session(user_id)
+            send_text(user_id, "🗑️ Orden borrada.")
+            home_menu(user_id)
+        else:
+            home_menu(user_id)
+        return
+
+    if state in ("PICK_PRODUCT",):
+        # Permitir selección por texto "1" o "c1"/"b2"
+        cat = session["tmp"].get("category")
+        code = parse_product_code_from_text(t, cat)
+        prod = get_product_by_code(code) if code else None
+        if not prod:
+            send_text(user_id, "No entendí. Tocá un producto en la lista o escribí su número/código.")
+            return
+        # Ir a regleta
+        session["tmp"]["current_product"] = prod
+        session["tmp"]["qty"] = 1
+        session["state"] = "QTY"
+        qty_stepper(user_id, prod["name"], 1, hint="Usá ➖/➕ y luego ✅ Agregar.")
+        return
+
+    if state == "PAY_NAME":
+        if len(t) < 2:
+            send_text(user_id, "Decime tu nombre, por favor 🙂")
+            return
+        session["tmp"]["name"] = text.strip()
+        session["state"] = "PAY_DELIVERY_TYPE"
+        send_buttons(user_id, "¿Entrega o retiro?", [
+            {"id": "DELIVERY", "title": "Delivery"},
+            {"id": "PICKUP", "title": "Retiro"},
+            {"id": "CANCEL_PAY", "title": "Cancelar"},
+        ])
+        return
+
+    if state == "PAY_ADDRESS":
+        if len(t) < 5:
+            send_text(user_id, "Pasame la dirección completa, por favor.")
+            return
+        session["tmp"]["address"] = text.strip()
+        session["state"] = "PAY_METHOD"
+        send_buttons(user_id, "Método de pago:", [
+            {"id": "PAY_CASH", "title": "Efectivo"},
+            {"id": "PAY_CARD", "title": "Tarjeta"},
+            {"id": "PAY_TRANSFER", "title": "Transferencia"},
+        ])
+        return
+
+    # Fallback general
+    home_menu(user_id)
+
+
+async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
+    # HOME
+    if iid in ("HOME_MENU", "HOME_PEDIR", "HOME_CARRITO", "HOME_UBI", "HOME_ASESOR", "HOME_BORRAR"):
+        session["state"] = "HOME"
+        if iid == "HOME_MENU":
+            categorias_menu(user_id, "Menú — elegí categoría")
+        elif iid == "HOME_PEDIR":
+            categorias_menu(user_id, "Pedir — elegí categoría")
+            session["tmp"]["intent"] = "ORDER"
+        elif iid == "HOME_CARRITO":
+            cart_actions(user_id, session)
+        elif iid == "HOME_UBI":
+            show_ubi(user_id)
+        elif iid == "HOME_ASESOR":
+            show_asesor(user_id)
+        elif iid == "HOME_BORRAR":
+            reset_session(user_id)
+            send_text(user_id, "🗑️ Orden borrada.")
+            home_menu(user_id)
+        return
+
+    # Categorías
+    if iid in ("CAT_COMIDA", "CAT_BEBIDAS"):
+        cat = "COMIDA" if iid == "CAT_COMIDA" else "BEBIDAS"
+        session["tmp"]["category"] = cat
+        session["state"] = "PICK_PRODUCT"
+        productos_list(user_id, cat)
+        return
+
+    # Selección producto desde lista
+    if iid.startswith("PROD_"):
+        code = iid.replace("PROD_", "")  # c1 / b2
+        prod = get_product_by_code(code)
+        if not prod:
+            send_text(user_id, "Ese producto ya no está disponible.")
+            return
+        session["tmp"]["current_product"] = prod
+        session["tmp"]["qty"] = 1
+        session["state"] = "QTY"
+        qty_stepper(user_id, prod["name"], 1, hint="Usá ➖/➕ y luego ✅ Agregar.")
+        return
+
+    # Regleta cantidad
+    if iid in ("QTY_MINUS", "QTY_PLUS", "QTY_ADD"):
+        prod = session["tmp"].get("current_product")
+        if not prod:
+            session["state"] = "HOME"
+            home_menu(user_id)
+            return
+
+        qty = int(session["tmp"].get("qty", 1))
+
+        if iid == "QTY_MINUS":
+            qty = max(1, qty - 1)
+            session["tmp"]["qty"] = qty
+            qty_stepper(user_id, prod["name"], qty)
+            return
+
+        if iid == "QTY_PLUS":
+            qty = min(9, qty + 1)
+            session["tmp"]["qty"] = qty
+            qty_stepper(user_id, prod["name"], qty)
+            return
+
+        if iid == "QTY_ADD":
+            cart = session["cart"]
+            code = prod["code"]
+            if code not in cart:
+                cart[code] = {"name": prod["name"], "price": prod["price"], "qty": 0}
+            cart[code]["qty"] += qty
+
+            total = total_cart(session)
+            send_text(user_id, f"✅ Agregado: {qty} x {prod['name']}\nTotal: C${total}")
+            session["state"] = "HOME"
+            post_add_actions(user_id)
+            return
+
+    # Después de agregar
+    if iid in ("AFTER_ADD_MORE", "AFTER_ADD_CART", "AFTER_ADD_PAY"):
+        if iid == "AFTER_ADD_MORE":
+            categorias_menu(user_id, "Elegí categoría para seguir agregando")
+        elif iid == "AFTER_ADD_CART":
+            cart_actions(user_id, session)
+        elif iid == "AFTER_ADD_PAY":
+            pay_start(user_id, session)
+        return
+
+    # Carrito
+    if iid in ("CART_EDIT", "CART_CLEAR", "CART_PAY", "CART_MENU"):
+        if iid == "CART_EDIT":
+            cart_pick_item(user_id, session)
+        elif iid == "CART_CLEAR":
+            session["cart"] = {}
+            send_text(user_id, "🗑️ Carrito vaciado.")
+            home_menu(user_id)
+        elif iid == "CART_PAY":
+            pay_start(user_id, session)
+        elif iid == "CART_MENU":
+            categorias_menu(user_id, "Menú — elegí categoría")
+        return
+
+    # Elegir item a editar
+    if iid.startswith("EDIT_"):
+        code = iid.replace("EDIT_", "")
+        it = session["cart"].get(code)
+        if not it:
+            send_text(user_id, "Ese item ya no está en el carrito.")
+            cart_actions(user_id, session)
+            return
+
+        session["tmp"]["edit_code"] = code
+        session["tmp"]["edit_qty"] = it["qty"]
+        session["state"] = "EDIT_QTY"
+        send_buttons(user_id, f"✏️ *{it['name']}*\nCantidad: *{it['qty']}*", [
+            {"id": "EDIT_MINUS", "title": "➖"},
+            {"id": "EDIT_DONE", "title": "✅ Listo"},
+            {"id": "EDIT_PLUS", "title": "➕"},
+        ])
+        return
+
+    if iid in ("EDIT_MINUS", "EDIT_PLUS", "EDIT_DONE"):
+        code = session["tmp"].get("edit_code")
+        if not code or code not in session["cart"]:
+            cart_actions(user_id, session)
+            return
+
+        qty = int(session["tmp"].get("edit_qty", session["cart"][code]["qty"]))
+
+        if iid == "EDIT_MINUS":
+            qty = max(0, qty - 1)
+            session["tmp"]["edit_qty"] = qty
+            nm = session["cart"][code]["name"]
+            send_buttons(user_id, f"✏️ *{nm}*\nCantidad: *{qty}*", [
+                {"id": "EDIT_MINUS", "title": "➖"},
+                {"id": "EDIT_DONE", "title": "✅ Listo"},
+                {"id": "EDIT_PLUS", "title": "➕"},
+            ])
+            return
+
+        if iid == "EDIT_PLUS":
+            qty = min(9, qty + 1)
+            session["tmp"]["edit_qty"] = qty
+            nm = session["cart"][code]["name"]
+            send_buttons(user_id, f"✏️ *{nm}*\nCantidad: *{qty}*", [
+                {"id": "EDIT_MINUS", "title": "➖"},
+                {"id": "EDIT_DONE", "title": "✅ Listo"},
+                {"id": "EDIT_PLUS", "title": "➕"},
+            ])
+            return
+
+        if iid == "EDIT_DONE":
+            qty = int(session["tmp"].get("edit_qty", 1))
+            if qty <= 0:
+                session["cart"].pop(code, None)
+                send_text(user_id, "🗑️ Item eliminado.")
+            else:
+                session["cart"][code]["qty"] = qty
+                send_text(user_id, "✅ Cantidad actualizada.")
+
+            session["state"] = "HOME"
+            cart_actions(user_id, session)
+            return
+
+    # Pago
+    if iid in ("DELIVERY", "PICKUP", "CANCEL_PAY"):
+        if iid == "CANCEL_PAY":
+            session["state"] = "HOME"
+            send_text(user_id, "Pago cancelado.")
+            home_menu(user_id)
+            return
+
+        if iid == "DELIVERY":
+            session["tmp"]["delivery"] = "delivery"
+            session["state"] = "PAY_ADDRESS"
+            send_text(user_id, "📍 Pasame tu *dirección* para delivery:")
+            return
+
+        if iid == "PICKUP":
+            session["tmp"]["delivery"] = "retiro"
+            session["tmp"]["address"] = "Retiro en local"
+            session["state"] = "PAY_METHOD"
+            send_buttons(user_id, "Método de pago:", [
+                {"id": "PAY_CASH", "title": "Efectivo"},
+                {"id": "PAY_CARD", "title": "Tarjeta"},
+                {"id": "PAY_TRANSFER", "title": "Transferencia"},
+            ])
+            return
+
+    if iid in ("PAY_CASH", "PAY_CARD", "PAY_TRANSFER"):
+        method = {"PAY_CASH": "efectivo", "PAY_CARD": "tarjeta", "PAY_TRANSFER": "transferencia"}[iid]
+        session["tmp"]["payment"] = method
+
+        # Resumen
+        name = session["tmp"].get("name", "Cliente")
+        phone = user_id
+        total = total_cart(session)
+        delivery = session["tmp"].get("delivery", "")
+        address = session["tmp"].get("address", "")
+
+        summary_lines = [
+            f"🧾 *Nuevo pedido*",
+            f"Nombre: {name}",
+            f"Cliente: {phone}",
+            "",
+            cart_text(session),
+            "",
+            f"Entrega: {delivery}",
+            f"Dirección: {address}",
+            f"Pago: {method}",
+        ]
+        summary = "\n".join(summary_lines)
+
+        send_buttons(user_id, summary + "\n\n¿Confirmás el pedido?", [
+            {"id": "CONFIRM_ORDER", "title": "1) Confirmar"},
+            {"id": "CANCEL_ORDER", "title": "2) Cancelar"},
+            {"id": "HOME_CARRITO", "title": "Carrito"},
+        ])
+        session["state"] = "CONFIRM"
+        return
+
+    if iid in ("CONFIRM_ORDER", "CANCEL_ORDER"):
+        if iid == "CANCEL_ORDER":
+            session["state"] = "HOME"
+            send_text(user_id, "Pedido cancelado. Podés volver a armarlo cuando quieras 🙂")
+            home_menu(user_id)
+            return
+
+        # Confirmado
+        send_text(user_id, "✅ Pedido recibido. En breve te confirmamos por aquí 🙌")
+        # Aquí podrías enviar el resumen a un número interno del restaurante (cuando ya tengan número real)
+        session["state"] = "HOME"
+        reset_session(user_id)
+        return
+
+    # Fallback
+    home_menu(user_id)
