@@ -938,8 +938,8 @@ async def pay_start(user_id: str, session: Dict[str, Any]):
 async def ask_district_group(to: str):
     rows = []
     for gkey, label, _fee in DELIVERY_GROUPS:
-        rows.append({"id": f"DG_{gkey}", "title": label, "description": "Seleccionar"})
-    rows.append({"id": "DG_OUT", "title": OUTSIDE_MANAGUA_LABEL, "description": "Cotiza con asesor"})
+        rows.append({"id": f"DG_{gkey}", "title": short_title(label, 24) "description": "Seleccionar"})
+    rows.append({"id": "DG_OUT", "title": short_title(OUTSIDE_MANAGUA_LABEL, 24) "description": "Cotiza con asesor"})
 
     sections = [{"title": "Distritos", "rows": rows}]
     send_list(to, "📍 ¿A qué distrito pertenece tu dirección?", "Elegir", sections)
