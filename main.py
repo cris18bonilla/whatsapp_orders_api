@@ -32,7 +32,7 @@ DELIVERY_GROUPS = [
     ("G2", "Distrito II / III / IV", 65),
     ("G3", "Distrito VI", 95),
 ]
-OUTSIDE_MANAGUA_LABEL = "Fuera de Managua (Asesor)"
+OUTSIDE_MANAGUA_LABEL = "Fuera de Managua"
 
 # =========================
 # MENÚS
