@@ -880,7 +880,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
         return
 
     # Método de pago
-    if iid in ("PAY_CASH", "PAY_CARD", "PAY_TRANSFER"):
+    if iid in ("PAY_CASH", "PAY_TRANSFER"):
         method = {"PAY_CASH": "Efectivo", "PAY_CARD": "Tarjeta", "PAY_TRANSFER": "Transferencia"}[iid]
         session["tmp"]["payment_method"] = method
         await send_invoice_and_confirm(user_id, session)
@@ -949,7 +949,6 @@ async def ask_payment_method(to: str, session: Dict[str, Any]):
     session["state"] = "PAY_METHOD"
     send_buttons(to, "Método de pago:", [
         {"id": "PAY_CASH", "title": "1) Efectivo"},
-        {"id": "PAY_CARD", "title": "2) Tarjeta"},
         {"id": "PAY_TRANSFER", "title": "3) Transferencia"},
     ])
 
