@@ -6,9 +6,12 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple
 
 from fastapi import FastAPI, Request
+from db import engine, SessionLocal
+from models import Base, Order, OrderItem
 from fastapi.responses import PlainTextResponse, JSONResponse
 
 app = FastAPI(title="WhatsApp Orders API")
+Base.metadata.create_all(bind=engine)
 
 # =========================
 # ENV
@@ -405,11 +408,15 @@ def health():
 
 
 @app.get("/webhook/whatsapp")
-def verify(mode: str = "", challenge: str = "", verify_token: str = ""):
-    if mode == "subscribe" and verify_token == VERIFY_TOKEN:
-        return PlainTextResponse(challenge)
-    return PlainTextResponse("forbidden", status_code=403)
+async def whatsapp_verify(request: Request):
+    mode = request.query_params.get("hub.mode")
+    token = request.query_params.get("hub.verify_token")
+    challenge = request.query_params.get("hub.challenge")
 
+    if mode == "subscribe" and token == VERIFY_TOKEN and challenge:
+        return PlainTextResponse(challenge, status_code=200)
+
+    return PlainTextResponse("forbidden", status_code=403)
 
 @app.post("/webhook/whatsapp")
 async def webhook(request: Request):
@@ -894,11 +901,52 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             return
 
         # confirmado
-        send_text(user_id, "✅ Pedido recibido. En breve te confirmamos por aquí 🙌")
+        db = SessionLocal()
+        try:
+            name = session["tmp"].get("name")
+            mode = session["tmp"].get("delivery_mode")
+            address = session["tmp"].get("address")
+            dg = session["tmp"].get("district_group")
+            fee = int(session["tmp"].get("delivery_fee", 0))
+            pay_method = session["tmp"].get("payment_method")
+
+            subtotal = cart_total(session["cart"])
+            total = subtotal + fee
+
+            order = Order(
+                wa_id=user_id,
+                customer_name=name,
+                delivery_mode=mode,
+                address=address,
+                district_group=dg,
+                payment_method=pay_method,
+                subtotal=subtotal,
+                delivery_fee=fee,
+                total=total,
+            )
+
+            for it in session["cart"]:
+                order.items.append(OrderItem(
+                    name=it["name"],
+                    config=it.get("config") or "",
+                    price=int(it["price"]),
+                    qty=int(it["qty"]),
+                ))
+
+            db.add(order)
+            db.commit()
+
+            send_text(user_id, "✅ Pedido recibido y guardado. En breve te confirmamos por aquí 🙌")
+        except Exception as e:
+            db.rollback()
+            print("DB_SAVE_ERROR", str(e))
+            send_text(user_id, "⚠️ Tu pedido se recibió, pero hubo un problema guardándolo. Un asesor te ayuda.")
+        finally:
+            db.close()
+
         reset_session(user_id)
         home_menu(user_id)
         return
-
     # fallback
     home_menu(user_id)
 
