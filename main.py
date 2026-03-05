@@ -8,6 +8,8 @@ from typing import Dict, Any, Optional, List, Tuple
 import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 
 from db import engine, SessionLocal
 from models import Base, Order, OrderItem
@@ -20,6 +22,10 @@ ACTIVE_TICKETS: dict[str, str] = {}
 CLIENT_TICKET: dict[str, str] = {}
 
 app = FastAPI(title="WhatsApp Orders API")
+
+templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 Base.metadata.create_all(bind=engine)
 
 # =========================
@@ -463,6 +469,9 @@ def gen_order_ticket() -> str:
 def health():
     return {"ok": True}
 
+@app.get("/orders")
+def orders_page(request: Request):
+    return templates.TemplateResponse("orders.html", {"request": request})
 
 @app.get("/webhook/whatsapp")
 async def whatsapp_verify(request: Request):
