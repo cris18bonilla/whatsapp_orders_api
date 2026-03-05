@@ -11,12 +11,12 @@ from db import engine, SessionLocal
 from models import Base, Order, OrderItem
 from fastapi.responses import PlainTextResponse, JSONResponse
 
-ADMIN_PHONE = os.getenv("ADMIN_PHONE", "")  # tu número admin en formato wa_id (ej: "5058xxxxxxx")
+ADMIN_PHONE = os.getenv("ADMIN_PHONE", "")  # ej: "50586907134" (sin +)
 
 # ticket -> cliente_wa_id
 ACTIVE_TICKETS: dict[str, str] = {}
 
-# cliente_wa_id -> ticket (para saber si ese cliente ya está en modo asesor)
+# cliente_wa_id -> ticket
 CLIENT_TICKET: dict[str, str] = {}
 
 app = FastAPI(title="WhatsApp Orders API")
@@ -38,7 +38,6 @@ HORARIO = "9:00 a.m. a 10:00 p.m."
 
 SESSION_TTL_SEC = 20 * 60  # 20 minutos
 
-# Delivery por grupos (NO se muestra al cliente hasta la factura)
 DELIVERY_GROUPS = [
     ("G1", "Distrito I / V / VII", 40),
     ("G2", "Distrito II / III / IV", 65),
@@ -49,7 +48,6 @@ OUTSIDE_MANAGUA_LABEL = "Fuera de Managua"
 # =========================
 # MENÚS
 # =========================
-# Desayunos
 DESAYUNOS: List[Tuple[str, int]] = [
     ("Madroño", 150),
     ("Guegüense", 150),
@@ -58,7 +56,6 @@ DESAYUNOS: List[Tuple[str, int]] = [
     ("Solar de monimbó", 100),
 ]
 
-# Almuerzos (todos C$200)
 ALMUERZOS: List[Tuple[str, int]] = [
     ("Pollo frito", 200),
     ("Pollo jalapeño", 200),
@@ -70,7 +67,6 @@ ALMUERZOS: List[Tuple[str, int]] = [
     ("Arroz a la valenciana", 200),
 ]
 
-# Fritangas (antes “Cenas”)
 FRITANGAS: List[Tuple[str, int]] = [
     ("Carne asada", 250),
     ("Cerdo asado", 250),
@@ -83,7 +79,6 @@ FRITANGAS: List[Tuple[str, int]] = [
     ("Fritangazo", 1800),
 ]
 
-# Bebidas
 BEBIDAS: List[Tuple[str, int]] = [
     ("Guayaba", 40),
     ("Jamaica", 40),
@@ -93,19 +88,12 @@ BEBIDAS: List[Tuple[str, int]] = [
     ("Cacao", 80),
 ]
 
-# Extras (por ahora vacío; si después me pasás la lista, lo llenamos)
 EXTRAS: List[Tuple[str, int]] = []
 
 
 # =========================
 # SESIONES (memoria RAM)
 # =========================
-# sessions[wa_id] = {
-#   "ts": last_update,
-#   "state": "...",
-#   "cart": [ {item}, {item} ... ],  # cada item es una CONFIGURACIÓN (plato + sides)
-#   "tmp": {...}
-# }
 sessions: Dict[str, Dict[str, Any]] = {}
 
 
@@ -151,7 +139,6 @@ def wa_post(payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{GRAPH_URL}/{PHONE_NUMBER_ID}/messages"
     r = requests.post(url, headers=wa_headers(), json=payload, timeout=25)
 
-    # Log útil en Render si Meta rechaza
     if r.status_code >= 300:
         try:
             print("WA_SEND_ERROR", r.status_code, r.text)
@@ -251,16 +238,8 @@ def home_menu(to: str):
 def menu_categorias(to: str, title: str = "Elegí una categoría"):
     rows = [
         {"id": "CAT_DESAYUNOS", "title": "1) Desayunos", "description": "Ver opciones"},
-        {
-            "id": "CAT_ALMUERZOS",
-            "title": "2) Almuerzos",
-            "description": "Elegí plato + acompañamientos",
-        },
-        {
-            "id": "CAT_FRITANGAS",
-            "title": "3) Fritangas",
-            "description": "Elegí plato + acompañamientos",
-        },
+        {"id": "CAT_ALMUERZOS", "title": "2) Almuerzos", "description": "Elegí plato + acompañamientos"},
+        {"id": "CAT_FRITANGAS", "title": "3) Fritangas", "description": "Elegí plato + acompañamientos"},
         {"id": "CAT_BEBIDAS", "title": "4) Bebidas", "description": "Frescos y cacao"},
     ]
     if EXTRAS:
@@ -297,42 +276,113 @@ def show_ubi(to: str):
     send_text(to, f"📍 *Ubicación*\n{DIRECCION}\n\n🕘 *Horario*\n{HORARIO}")
 
 
-def show_asesor(user_id, name, last_message=""):
-    session = SESSIONS.setdefault(user_id, {"tmp": {}})
-
+# =========================
+# ASESOR + TICKETS
+# =========================
+def show_asesor(user_id: str, session: Dict[str, Any], last_message: str = ""):
+    # poner al cliente en modo asesor
     session["state"] = "ASESOR"
 
-    send_text(user_id,
-        "👨‍💼 Perfecto. Un asesor te atiende por este mismo número.\n"
-        "Escribí tu consulta aquí 👇"
-    )
-    # si ya tenía ticket, reutilizarlo
-    if to in CLIENT_TICKET:
-        ticket = CLIENT_TICKET[to]
+    # crear / reutilizar ticket
+    if user_id in CLIENT_TICKET:
+        ticket = CLIENT_TICKET[user_id]
     else:
         ticket = "A" + str(uuid.uuid4())[:4].upper()
-        CLIENT_TICKET[to] = ticket
-        ACTIVE_TICKETS[ticket] = to
+        CLIENT_TICKET[user_id] = ticket
+        ACTIVE_TICKETS[ticket] = user_id
 
+    # mensaje al cliente
     send_text(
-        to,
-        f"👨‍💼 Un asesor te atiende ahora.\nTu ticket es: {ticket}\nEscribe tu consulta aquí.",
+        user_id,
+        f"👨‍💼 Perfecto. Un asesor te atiende por este mismo número.\n"
+        f"Tu ticket es: *{ticket}*\n"
+        f"Escribí tu consulta aquí 👇\n\n"
+        f"Para volver al menú en cualquier momento: escribí *Menú*"
     )
 
-    admin_msg = (
-        f"🆘 NUEVO ASESOR\n\n"
-        f"Ticket: {ticket}\n"
-        f"Cliente: {name}\n"
-        f"Número: {to}\n\n"
-        f"Mensaje:\n{last_message}\n\n"
-        f"Responder así:\n"
-        f"{ticket} Hola! 👋"
-    )
-
+    # notificación al admin
     if ADMIN_PHONE:
+        admin_msg = (
+            f"🆘 NUEVO ASESOR\n\n"
+            f"Ticket: {ticket}\n"
+            f"Número: {user_id}\n"
+            f"Mensaje:\n{last_message or '(sin mensaje)'}\n\n"
+            f"Responder así:\n{ticket} Hola! 👋"
+        )
         send_text(ADMIN_PHONE, admin_msg)
+    else:
+        print("WARN: ADMIN_PHONE vacío, no se notificó al admin.")
 
 
+def forward_client_to_admin(client_id: str, client_name: str, text: str):
+    ticket = CLIENT_TICKET.get(client_id)
+    if not ticket:
+        return
+
+    msg = (
+        f"💬 MENSAJE CLIENTE\n\n"
+        f"Ticket: {ticket}\n"
+        f"Cliente: {client_name}\n"
+        f"Número: {client_id}\n\n"
+        f"Mensaje:\n{text}\n\n"
+        f"Responder así:\n{ticket} <tu respuesta>"
+    )
+    if ADMIN_PHONE:
+        send_text(ADMIN_PHONE, msg)
+
+
+def handle_admin_reply(text: str):
+    parts = text.strip().split(maxsplit=1)
+    if not parts:
+        return
+
+    ticket = parts[0].upper()
+
+    # si no parece ticket, dar guía (no molestar con "inválido")
+    if not re.match(r"^A[0-9A-F]{4}$", ticket):
+        if ADMIN_PHONE:
+            send_text(
+                ADMIN_PHONE,
+                "ℹ️ Para responder a un cliente usá:\n"
+                "A1B2 tu mensaje\n\n"
+                "Para cerrar:\n"
+                "A1B2 cerrar\n\n"
+                "Tip: probá el bot como cliente desde otro número."
+            )
+        return
+
+    body = parts[1] if len(parts) > 1 else ""
+
+    if ticket not in ACTIVE_TICKETS:
+        if ADMIN_PHONE:
+            send_text(ADMIN_PHONE, "❌ Ticket no válido o ya cerrado.")
+        return
+
+    client_id = ACTIVE_TICKETS[ticket]
+
+    # comando cerrar
+    if body.lower() in ("cerrar", "close", "cerrado"):
+        ACTIVE_TICKETS.pop(ticket, None)
+        CLIENT_TICKET.pop(client_id, None)
+
+        if ADMIN_PHONE:
+            send_text(ADMIN_PHONE, f"✅ Ticket {ticket} cerrado.")
+        send_text(client_id, "✅ Listo. Cerré el chat con asesor. Si necesitás algo más, escribí *Menú*.")
+        return
+
+    if not body:
+        if ADMIN_PHONE:
+            send_text(ADMIN_PHONE, "📩 Escribí tu mensaje después del ticket. Ej: A1B2 Hola!")
+        return
+
+    send_text(client_id, f"💬 Asesor: {body}")
+    if ADMIN_PHONE:
+        send_text(ADMIN_PHONE, "✅ Enviado al cliente.")
+
+
+# =========================
+# UI FLUJO
+# =========================
 def qty_stepper(to: str, summary: str, qty: int):
     body = f"{summary}\n\nCantidad: *{qty}*"
     send_buttons(
@@ -529,64 +579,6 @@ async def webhook(request: Request):
 
 
 # =========================
-# CHAT CLIENTE → ADMIN
-# =========================
-def forward_client_to_admin(client_id: str, client_name: str, text: str):
-    ticket = CLIENT_TICKET.get(client_id)
-    if not ticket:
-        return
-
-    msg = (
-        f"💬 MENSAJE CLIENTE\n\n"
-        f"Ticket: {ticket}\n"
-        f"Cliente: {client_name}\n"
-        f"Número: {client_id}\n\n"
-        f"Mensaje:\n{text}\n\n"
-        f"Responder así:\n{ticket} <tu respuesta>"
-    )
-    if ADMIN_PHONE:
-        send_text(ADMIN_PHONE, msg)
-
-
-# =========================
-# RESPUESTA ADMIN → CLIENTE
-# =========================
-def handle_admin_reply(text: str):
-    parts = text.strip().split(maxsplit=1)
-    if not parts:
-        return
-
-    ticket = parts[0].upper()
-    body = parts[1] if len(parts) > 1 else ""
-
-    if ticket not in ACTIVE_TICKETS:
-        if ADMIN_PHONE:
-            send_text(ADMIN_PHONE, "❌ Ticket no válido o ya cerrado.")
-        return
-
-    client_id = ACTIVE_TICKETS[ticket]
-
-    # comando para cerrar
-    if body.lower() in ("cerrar", "close", "cerrado"):
-        ACTIVE_TICKETS.pop(ticket, None)
-        CLIENT_TICKET.pop(client_id, None)
-
-        if ADMIN_PHONE:
-            send_text(ADMIN_PHONE, f"✅ Ticket {ticket} cerrado.")
-        send_text(client_id, "✅ Listo. Cerré el chat con asesor. Si necesitás algo más, escribí *Menú*.")
-        return
-
-    if not body:
-        if ADMIN_PHONE:
-            send_text(ADMIN_PHONE, "📩 Escribí tu mensaje después del ticket. Ej: A1B2 Hola!")
-        return
-
-    send_text(client_id, f"💬 Asesor: {body}")
-    if ADMIN_PHONE:
-        send_text(ADMIN_PHONE, "✅ Enviado al cliente.")
-
-
-# =========================
 # FLOW HANDLERS
 # =========================
 async def handle_message(
@@ -602,18 +594,16 @@ async def handle_message(
         handle_admin_reply(text)
         return
 
-    # CLIENTE HABLANDO CON ASESOR
-    if text and user_id in CLIENT_TICKET:
-        client_name = session.get("name", "Cliente")
-        forward_client_to_admin(user_id, client_name, text)
-        send_text(user_id, "✅ Recibido. Un asesor te responde por aquí.")
+    # SALIDAS UNIVERSALES (especialmente útil para asesor)
+    if t in ("menu", "menú", "inicio", "salir", "cancelar", "fin"):
+        session["state"] = "HOME"
+        # salir también del ticket
+        CLIENT_TICKET.pop(user_id, None)
+        send_text(user_id, "✅ Listo. Volviste al menú.")
+        home_menu(user_id)
         return
 
     # Atajos por texto
-    if t in ("menu", "menú", "inicio"):
-        session["state"] = "HOME"
-        home_menu(user_id)
-        return
     if t == "carrito":
         cart_actions(user_id, session)
         return
@@ -626,19 +616,19 @@ async def handle_message(
         home_menu(user_id)
         return
 
+    # Interactivos primero
     if interactive_id:
         await handle_interactive(user_id, session, interactive_id)
         return
 
-    # Si el usuario escribe libre en estados de pago
-    state = session.get("state", "HOME")
-   
     # Si el cliente está hablando con asesor
-    if state == "ASESOR" and text:
-        client_name = session.get("name", "Cliente")
+    if session.get("state") == "ASESOR" and text:
+        client_name = session.get("tmp", {}).get("name") or session.get("name", "Cliente")
         forward_client_to_admin(user_id, client_name, text)
         send_text(user_id, "✅ Recibido. Un asesor te responde por aquí.")
         return
+
+    state = session.get("state", "HOME")
 
     if state == "HOME":
         home_menu(user_id)
@@ -690,7 +680,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             show_ubi(user_id)
             return
         if iid == "HOME_ASESOR":
-            show_asesor(user_id, session.get("name", "Cliente"))
+            show_asesor(user_id, session)
             return
         if iid == "HOME_CLEAR":
             reset_session(user_id)
@@ -852,12 +842,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
                 config = f"{side1}"
 
             session["cart"].append(
-                {
-                    "name": name,
-                    "price": int(price),
-                    "qty": int(qty),
-                    "config": config,
-                }
+                {"name": name, "price": int(price), "qty": int(qty), "config": config}
             )
 
             send_text(user_id, f"✅ Agregado: {qty} x {name}" + (f" ({config})" if config else ""))
@@ -1033,9 +1018,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
     if iid.startswith("DG_"):
         dg = iid.replace("DG_", "")
         if dg == "OUT":
-            send_text(user_id, "📌 Esta dirección está fuera de Managua.\nUn asesor te cotiza el envío por aquí 🙂")
-            show_asesor(user_id)
-            session["state"] = "HOME"
+            show_asesor(user_id, session, last_message="Cotizar envío fuera de Managua")
             return
 
         match = next((g for g in DELIVERY_GROUPS if g[0] == dg), None)
@@ -1052,10 +1035,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
 
     # Método de pago
     if iid in ("PAY_CASH", "PAY_TRANSFER"):
-        method_map = {
-            "PAY_CASH": "Efectivo",
-            "PAY_TRANSFER": "Transferencia",
-        }
+        method_map = {"PAY_CASH": "Efectivo", "PAY_TRANSFER": "Transferencia"}
         method = method_map[iid]
         session["tmp"]["payment_method"] = method
         await send_invoice_and_confirm(user_id, session)
@@ -1106,11 +1086,37 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             db.add(order)
             db.commit()
 
+            # ✅ NOTIFICACIÓN AL ADMIN
+            if ADMIN_PHONE:
+                items_txt = []
+                for it in session["cart"]:
+                    conf = it.get("config") or ""
+                    line = f"- {it['qty']} x {it['name']} ({conf})" if conf else f"- {it['qty']} x {it['name']}"
+                    items_txt.append(line)
+
+                admin_order_msg = (
+                    f"🧾 NUEVO PEDIDO\n\n"
+                    f"Cliente: {name}\n"
+                    f"Número: {user_id}\n"
+                    f"Entrega: {mode}\n"
+                    f"Distrito: {dg or '-'}\n"
+                    f"Dirección: {address or '-'}\n"
+                    f"Pago: {pay_method}\n\n"
+                    f"Items:\n" + "\n".join(items_txt) + "\n\n"
+                    f"Subtotal: C${subtotal}\n"
+                    f"Envío: C${fee}\n"
+                    f"Total: C${total}"
+                )
+                send_text(ADMIN_PHONE, admin_order_msg)
+            else:
+                print("WARN: ADMIN_PHONE vacío, pedido guardado sin notificar.")
+
             send_text(user_id, "✅ Pedido recibido y guardado. En breve te confirmamos por aquí 🙌")
         except Exception as e:
             db.rollback()
             print("DB_SAVE_ERROR", str(e))
             send_text(user_id, "⚠️ Tu pedido se recibió, pero hubo un problema guardándolo. Un asesor te ayuda.")
+            show_asesor(user_id, session, last_message="Error guardando pedido en DB")
         finally:
             db.close()
 
