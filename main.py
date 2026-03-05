@@ -953,7 +953,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             order_ticket = gen_order_ticket()
 
             order = Order(
-                ticket=order_ticket,
+                ticket=f"TMP-{uuid.uuid4().hex[:10]}",
                 wa_id=user_id,
                 customer_name=name,
                 delivery_mode=mode,
@@ -976,6 +976,12 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
                 )
 
             db.add(order)
+            
+            db.flush()
+
+            date_str = datetime.utcnow().strftime("%Y%m%d")
+            order.ticket = f"P-{date_str}-{order.id:04d}"
+            
             db.commit()
 
             # Cliente
