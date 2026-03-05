@@ -10,7 +10,7 @@ class Order(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     # Ticket único del pedido (ej: P-20260305-7F3A)
-    ticket = Column(String(32), unique=True, index=True, nullable=False)
+    ticket = Column(String(32), unique=True, nullable=False)
 
     # wa_id viene como string numérico sin "+" (ej: 5058xxxxxxx)
     wa_id = Column(String(32), index=True, nullable=False)
