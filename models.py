@@ -9,7 +9,7 @@ class Order(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # Ticket único del pedido (ej: P-20260305-7F3A)
+    # Ticket único del pedido (ej: P-20260305-0001)
     ticket = Column(String(32), unique=True, nullable=False)
 
     # wa_id viene como string numérico sin "+" (ej: 5058xxxxxxx)
@@ -20,6 +20,10 @@ class Order(Base):
     address = Column(Text, nullable=True)
     district_group = Column(String(80), nullable=True)
     payment_method = Column(String(30), nullable=True)
+
+    # Estado operativo del pedido
+    # pendiente / preparando / en_camino / listo_retirar / entregado / cancelado
+    status = Column(String(30), nullable=False, default="pendiente", server_default="pendiente")
 
     subtotal = Column(Integer, nullable=False, default=0)
     delivery_fee = Column(Integer, nullable=False, default=0)

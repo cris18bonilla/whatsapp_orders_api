@@ -57,6 +57,15 @@ DELIVERY_GROUPS = [
 ]
 OUTSIDE_MANAGUA_LABEL = "Fuera de Managua"
 
+ORDER_STATUSES = {
+    "pendiente",
+    "preparando",
+    "en_camino",
+    "listo_retirar",
+    "entregado",
+    "cancelado",
+}
+
 # =========================
 # MENÚS
 # =========================
@@ -179,9 +188,54 @@ def send_list(to: str, body: str, button_text: str, sections: list):
         "messaging_product": "whatsapp",
         "to": to,
         "type": "interactive",
-        "interactive": {"type": "list", "body": {"text": body}, "action": {"button": button_text, "sections": sections}},
+        "interactive": {
+            "type": "list",
+            "body": {"text": body},
+            "action": {"button": button_text, "sections": sections},
+        },
     }
     return wa_post(payload)
+
+
+def notify_customer_order_status(order: Order):
+    if not order.wa_id:
+        return
+
+    status = (order.status or "").strip()
+
+    if status == "pendiente":
+        msg = (
+            f"🧾 Recibimos tu pedido *{order.ticket}*.\n"
+            "Está pendiente de validación y en breve te confirmamos."
+        )
+    elif status == "preparando":
+        msg = (
+            f"👨‍🍳 Tu pedido *{order.ticket}* ya está siendo preparado.\n"
+            "Te avisaremos cuando avance al siguiente paso."
+        )
+    elif status == "en_camino":
+        msg = (
+            f"🛵 Tu pedido *{order.ticket}* va en camino.\n"
+            "Pronto llegará a tu dirección."
+        )
+    elif status == "listo_retirar":
+        msg = (
+            f"📦 Tu pedido *{order.ticket}* ya está listo para retirar en el local."
+        )
+    elif status == "entregado":
+        msg = (
+            f"✅ Tu pedido *{order.ticket}* fue entregado.\n"
+            "Gracias por comprar con nosotros 🙌"
+        )
+    elif status == "cancelado":
+        msg = (
+            f"❌ Tu pedido *{order.ticket}* fue cancelado.\n"
+            "Si necesitas ayuda, escríbenos por este mismo chat."
+        )
+    else:
+        return
+
+    send_text(order.wa_id, msg)
 
 
 # =========================
@@ -241,7 +295,13 @@ def productos_list(to: str, cat_key: str, items: List[Tuple[str, int]]):
     for i, (name, price) in enumerate(items, start=1):
         rows.append({"id": f"PROD_{cat_key}_{i}", "title": f"{i}) {short_title(name)}", "description": f"C${price}"})
 
-    label = {"DES": "Desayunos", "ALM": "Almuerzos", "FRI": "Fritangas", "BEB": "Bebidas", "EXT": "Extras"}.get(cat_key, "Productos")
+    label = {
+        "DES": "Desayunos",
+        "ALM": "Almuerzos",
+        "FRI": "Fritangas",
+        "BEB": "Bebidas",
+        "EXT": "Extras",
+    }.get(cat_key, "Productos")
     sections = [{"title": label, "rows": rows}]
     send_list(to, f"🍽️ *{label}* (tocá para elegir)", "Ver", sections)
 
@@ -364,7 +424,11 @@ def qty_stepper(to: str, summary: str, qty: int):
     send_buttons(
         to,
         body,
-        [{"id": "QTY_MINUS", "title": "➖"}, {"id": "QTY_ADD", "title": "✅ Agregar"}, {"id": "QTY_PLUS", "title": "➕"}],
+        [
+            {"id": "QTY_MINUS", "title": "➖"},
+            {"id": "QTY_ADD", "title": "✅ Agregar"},
+            {"id": "QTY_PLUS", "title": "➕"},
+        ],
     )
 
 
@@ -406,7 +470,11 @@ def cart_actions(to: str, session: Dict[str, Any]):
     send_buttons(
         to,
         "Acciones:",
-        [{"id": "CART_EDIT", "title": "1) Editar"}, {"id": "CART_CLEAR", "title": "2) Vaciar"}, {"id": "CART_PAY", "title": "3) Pagar"}],
+        [
+            {"id": "CART_EDIT", "title": "1) Editar"},
+            {"id": "CART_CLEAR", "title": "2) Vaciar"},
+            {"id": "CART_PAY", "title": "3) Pagar"},
+        ],
     )
 
 
@@ -443,7 +511,11 @@ def ask_side1(to: str, title: str):
     send_buttons(
         to,
         f"Elegí acompañamiento para *{title}*:",
-        [{"id": "SIDE1_TAJADAS", "title": "1) Tajadas"}, {"id": "SIDE1_MADURO", "title": "2) Maduro"}, {"id": "CANCEL_FLOW", "title": "Cancelar"}],
+        [
+            {"id": "SIDE1_TAJADAS", "title": "1) Tajadas"},
+            {"id": "SIDE1_MADURO", "title": "2) Maduro"},
+            {"id": "CANCEL_FLOW", "title": "Cancelar"},
+        ],
     )
 
 
@@ -451,7 +523,11 @@ def ask_side2_fritanga(to: str):
     send_buttons(
         to,
         "Elegí base:",
-        [{"id": "SIDE2_GALLOPINTO", "title": "1) Gallo pinto"}, {"id": "SIDE2_ARROZ", "title": "2) Arroz blanco"}, {"id": "CANCEL_FLOW", "title": "Cancelar"}],
+        [
+            {"id": "SIDE2_GALLOPINTO", "title": "1) Gallo pinto"},
+            {"id": "SIDE2_ARROZ", "title": "2) Arroz blanco"},
+            {"id": "CANCEL_FLOW", "title": "Cancelar"},
+        ],
     )
 
 
@@ -463,7 +539,13 @@ def norm(t: str) -> str:
 
 
 def get_item_by_cat_index(cat_key: str, idx: int) -> Optional[Tuple[str, int]]:
-    items = {"DES": DESAYUNOS, "ALM": ALMUERZOS, "FRI": FRITANGAS, "BEB": BEBIDAS, "EXT": EXTRAS}.get(cat_key)
+    items = {
+        "DES": DESAYUNOS,
+        "ALM": ALMUERZOS,
+        "FRI": FRITANGAS,
+        "BEB": BEBIDAS,
+        "EXT": EXTRAS,
+    }.get(cat_key)
     if not items:
         return None
     if 1 <= idx <= len(items):
@@ -475,13 +557,12 @@ def get_item_by_cat_index(cat_key: str, idx: int) -> Optional[Tuple[str, int]]:
 # Ticket de pedido (DB)
 # =========================
 def make_order_ticket(order_id: int) -> str:
-    # P-YYYYMMDD-0001
     date_str = datetime.utcnow().strftime("%Y%m%d")
     return f"P-{date_str}-{order_id:04d}"
 
 
 # =========================
-# ADMIN API (para tu orders.js)
+# ADMIN API
 # =========================
 def require_admin_token(token: str):
     if ADMIN_API_TOKEN and token != ADMIN_API_TOKEN:
@@ -495,7 +576,7 @@ def admin_list_orders(limit: int = 20, token: str = ""):
 
     db = SessionLocal()
     try:
-        orders = db.query(Order).order_by(Order.id.desc()).limit(limit).all()
+        orders = db.query(Order).order_by(Order.id.asc()).limit(limit).all()
 
         result = []
         for o in orders:
@@ -520,16 +601,50 @@ def admin_list_orders(limit: int = 20, token: str = ""):
                     "address": o.address,
                     "district_group": o.district_group,
                     "payment_method": o.payment_method,
+                    "status": o.status,
                     "subtotal": int(o.subtotal),
                     "delivery_fee": int(o.delivery_fee),
                     "total": int(o.total),
-                    "status": getattr(o, "status", None),
                     "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None,
                     "items": items,
                 }
             )
 
         return {"ok": True, "orders": result}
+    finally:
+        db.close()
+
+
+@app.post("/admin/api/orders/{order_id}/status")
+async def admin_update_order_status(order_id: int, request: Request, token: str = ""):
+    require_admin_token(token)
+
+    payload = await request.json()
+    new_status = str(payload.get("status", "")).strip()
+
+    if new_status not in ORDER_STATUSES:
+        raise HTTPException(status_code=400, detail="invalid status")
+
+    db = SessionLocal()
+    try:
+        order = db.query(Order).filter(Order.id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
+
+        order.status = new_status
+        db.commit()
+        db.refresh(order)
+
+        notify_customer_order_status(order)
+
+        return {
+            "ok": True,
+            "order": {
+                "id": order.id,
+                "ticket": order.ticket,
+                "status": order.status,
+            },
+        }
     finally:
         db.close()
 
@@ -552,6 +667,7 @@ def orders_page(request: Request):
         },
     )
 
+
 @app.get("/webhook/whatsapp")
 async def whatsapp_verify(request: Request):
     mode = request.query_params.get("hub.mode")
@@ -562,6 +678,7 @@ async def whatsapp_verify(request: Request):
         return PlainTextResponse(challenge, status_code=200)
 
     return PlainTextResponse("forbidden", status_code=403)
+
 
 @app.post("/webhook/whatsapp")
 async def webhook(request: Request):
@@ -611,12 +728,10 @@ async def webhook(request: Request):
 async def handle_message(user_id: str, session: Dict[str, Any], text: str = "", interactive_id: Optional[str] = None):
     t = norm(text)
 
-    # ADMIN: responder tickets de asesor
     if user_id == ADMIN_PHONE and text:
         handle_admin_reply(text)
         return
 
-    # SALIDAS UNIVERSALES
     if t in ("menu", "menú", "inicio", "salir", "cancelar", "fin"):
         session["state"] = "HOME"
         close_asesor_ticket_for_client(user_id)
@@ -624,7 +739,6 @@ async def handle_message(user_id: str, session: Dict[str, Any], text: str = "", 
         home_menu(user_id)
         return
 
-    # Atajos texto
     if t == "carrito":
         cart_actions(user_id, session)
         return
@@ -637,12 +751,10 @@ async def handle_message(user_id: str, session: Dict[str, Any], text: str = "", 
         home_menu(user_id)
         return
 
-    # Interactivos primero
     if interactive_id:
         await handle_interactive(user_id, session, interactive_id)
         return
 
-    # Si está en asesor, forward
     if session.get("state") == "ASESOR" and text:
         client_name = session.get("tmp", {}).get("name") or "Cliente"
         forward_client_to_admin(user_id, client_name, text)
@@ -663,7 +775,11 @@ async def handle_message(user_id: str, session: Dict[str, Any], text: str = "", 
         send_buttons(
             user_id,
             "¿Cómo deseas recibir tu pedido?",
-            [{"id": "PAY_DELIVERY", "title": "1) Delivery"}, {"id": "PAY_PICKUP", "title": "2) Retiro"}, {"id": "CANCEL_PAY", "title": "Cancelar"}],
+            [
+                {"id": "PAY_DELIVERY", "title": "1) Delivery"},
+                {"id": "PAY_PICKUP", "title": "2) Retiro"},
+                {"id": "CANCEL_PAY", "title": "Cancelar"},
+            ],
         )
         return
 
@@ -680,12 +796,10 @@ async def handle_message(user_id: str, session: Dict[str, Any], text: str = "", 
 
 
 async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
-    # Asesor desde cualquier pantalla
     if iid == "HOME_ASESOR":
         show_asesor(user_id, session)
         return
 
-    # HOME
     if iid in ("HOME_MENU", "HOME_PEDIR", "HOME_CART", "HOME_UBI", "HOME_CLEAR"):
         if iid == "HOME_MENU":
             menu_categorias(user_id, "Menú — elegí categoría")
@@ -705,7 +819,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             home_menu(user_id)
             return
 
-    # CATEGORÍAS
     if iid.startswith("CAT_"):
         if iid == "CAT_DESAYUNOS":
             session["tmp"]["category"] = "DES"
@@ -731,7 +844,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             home_menu(user_id)
         return
 
-    # Elegir producto
     if iid.startswith("PROD_"):
         parts = iid.split("_")
         if len(parts) != 3:
@@ -777,7 +889,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
         home_menu(user_id)
         return
 
-    # Acompañamiento 1
     if iid in ("SIDE1_TAJADAS", "SIDE1_MADURO"):
         picked = session["tmp"].get("picked")
         if not picked:
@@ -802,7 +913,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
         home_menu(user_id)
         return
 
-    # Acompañamiento 2 (fritangas)
     if iid in ("SIDE2_GALLOPINTO", "SIDE2_ARROZ"):
         picked = session["tmp"].get("picked")
         if not picked:
@@ -816,7 +926,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
         qty_stepper(user_id, f"✅ *{picked['name']}* ({conf}) — C${picked['price']}", session["tmp"]["qty"])
         return
 
-    # Cantidad
     if iid in ("QTY_MINUS", "QTY_PLUS", "QTY_ADD"):
         picked = session["tmp"].get("picked")
         if not picked:
@@ -853,7 +962,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             after_add_actions(user_id)
             return
 
-    # Post-add
     if iid in ("AFTER_OTHER_PLATE", "AFTER_SAME_PLATE", "AFTER_CART"):
         if iid == "AFTER_OTHER_PLATE":
             menu_categorias(user_id, "Elegí categoría para seguir agregando")
@@ -895,7 +1003,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             menu_categorias(user_id, "Elegí categoría")
             return
 
-    # Carrito
     if iid in ("CART_EDIT", "CART_CLEAR", "CART_PAY"):
         if iid == "CART_EDIT":
             cart_pick_item(user_id, session)
@@ -909,7 +1016,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             await pay_start(user_id, session)
             return
 
-    # Editar item
     if iid.startswith("EDIT_"):
         try:
             idx = int(iid.split("_")[1])
@@ -929,7 +1035,11 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
         send_buttons(
             user_id,
             f"✏️ {label}\nCantidad: *{session['tmp']['edit_qty']}*",
-            [{"id": "EDIT_MINUS", "title": "➖"}, {"id": "EDIT_DONE", "title": "✅ Listo"}, {"id": "EDIT_PLUS", "title": "➕"}],
+            [
+                {"id": "EDIT_MINUS", "title": "➖"},
+                {"id": "EDIT_DONE", "title": "✅ Listo"},
+                {"id": "EDIT_PLUS", "title": "➕"},
+            ],
         )
         session["state"] = "EDIT_QTY"
         return
@@ -968,11 +1078,14 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
         send_buttons(
             user_id,
             f"✏️ {label}\nCantidad: *{session['tmp']['edit_qty']}*",
-            [{"id": "EDIT_MINUS", "title": "➖"}, {"id": "EDIT_DONE", "title": "✅ Listo"}, {"id": "EDIT_PLUS", "title": "➕"}],
+            [
+                {"id": "EDIT_MINUS", "title": "➖"},
+                {"id": "EDIT_DONE", "title": "✅ Listo"},
+                {"id": "EDIT_PLUS", "title": "➕"},
+            ],
         )
         return
 
-    # Pago
     if iid in ("PAY_DELIVERY", "PAY_PICKUP", "CANCEL_PAY"):
         if iid == "CANCEL_PAY":
             session["state"] = "HOME"
@@ -992,7 +1105,11 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             send_buttons(
                 user_id,
                 "🚚 El envío tiene un costo adicional.\n\n¿Procedemos con tus datos?",
-                [{"id": "DELIVERY_PROCEED", "title": "1) Sí, proceder"}, {"id": "CANCEL_PAY", "title": "Cancelar"}, {"id": "HOME_ASESOR", "title": "Asesor"}],
+                [
+                    {"id": "DELIVERY_PROCEED", "title": "1) Sí, proceder"},
+                    {"id": "CANCEL_PAY", "title": "Cancelar"},
+                    {"id": "HOME_ASESOR", "title": "Asesor"},
+                ],
             )
             session["state"] = "PAY_DELIVERY_NOTICE"
             return
@@ -1032,7 +1149,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             home_menu(user_id)
             return
 
-        # CONFIRMADO: guardar + notificar
         db = SessionLocal()
         try:
             name = session["tmp"].get("name", "Cliente")
@@ -1045,7 +1161,6 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             subtotal = cart_total(session["cart"])
             total = subtotal + fee
 
-            # Crea orden con ticket vacío, luego flush para obtener id y construir ticket real
             order = Order(
                 ticket="",
                 wa_id=user_id,
@@ -1054,6 +1169,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
                 address=address,
                 district_group=dg,
                 payment_method=pay_method,
+                status="pendiente",
                 subtotal=subtotal,
                 delivery_fee=fee,
                 total=total,
@@ -1070,15 +1186,18 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
                 )
 
             db.add(order)
-            db.flush()  # ahora order.id existe
+            db.flush()
 
             order.ticket = make_order_ticket(order.id)
             db.commit()
+            db.refresh(order)
 
-            # Cliente
-            send_text(user_id, f"✅ Pedido recibido y guardado. Ticket: *{order.ticket}*.\nEn breve te confirmamos por aquí 🙌")
+            send_text(
+                user_id,
+                f"✅ Pedido recibido y guardado. Ticket: *{order.ticket}*.\n"
+                "Tu pedido está pendiente de validación. En breve te confirmamos por aquí 🙌"
+            )
 
-            # Admin
             if ADMIN_PHONE:
                 items_txt = []
                 for it in session["cart"]:
@@ -1089,6 +1208,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
                 admin_order_msg = (
                     "🧾 NUEVO PEDIDO\n\n"
                     f"Ticket: {order.ticket}\n"
+                    f"Estado: {order.status}\n"
                     f"Cliente: {name}\n"
                     f"Número: {user_id}\n"
                     f"Entrega: {mode}\n"
@@ -1160,7 +1280,14 @@ async def ask_district_group(to: str):
 
 async def ask_payment_method(to: str, session: Dict[str, Any]):
     session["state"] = "PAY_METHOD"
-    send_buttons(to, "Método de pago:", [{"id": "PAY_CASH", "title": "1) Efectivo"}, {"id": "PAY_TRANSFER", "title": "2) Transferencia"}])
+    send_buttons(
+        to,
+        "Método de pago:",
+        [
+            {"id": "PAY_CASH", "title": "1) Efectivo"},
+            {"id": "PAY_TRANSFER", "title": "2) Transferencia"},
+        ],
+    )
 
 
 async def send_invoice_and_confirm(to: str, session: Dict[str, Any]):
@@ -1196,6 +1323,10 @@ async def send_invoice_and_confirm(to: str, session: Dict[str, Any]):
     send_buttons(
         to,
         "\n".join(lines) + "\n\n¿Confirmás el pedido?",
-        [{"id": "CONFIRM_ORDER", "title": "1) Confirmar"}, {"id": "CANCEL_ORDER", "title": "2) Cancelar"}, {"id": "HOME_ASESOR", "title": "Asesor"}],
+        [
+            {"id": "CONFIRM_ORDER", "title": "1) Confirmar"},
+            {"id": "CANCEL_ORDER", "title": "2) Cancelar"},
+            {"id": "HOME_ASESOR", "title": "Asesor"},
+        ],
     )
     session["state"] = "CONFIRM"
