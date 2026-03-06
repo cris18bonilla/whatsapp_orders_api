@@ -1,5 +1,8 @@
 const deliveryGrid = document.getElementById("deliveryGrid");
 const pickupGrid = document.getElementById("pickupGrid");
+
+window.lastOrders = [];
+
 const statusEl = document.getElementById("status");
 const lastUpdateEl = document.getElementById("lastUpdate");
 const deliveryCountEl = document.getElementById("deliveryCount");
@@ -110,7 +113,8 @@ function createActionButtons(order) {
       }
       <button class="btn btn-delivered" data-order-id="${order.id}" data-status="entregado">Entregado</button>
       <button class="btn btn-cancelled" data-order-id="${order.id}" data-status="cancelado">Cancelado</button>
-    </div>
+      <button class="btn btn-outline print-btn" data-ticket="${order.ticket}">🖨 Imprimir</button>
+ </div>
   `;
 }
 
@@ -223,6 +227,8 @@ async function fetchOrders() {
     const data = await res.json();
     const rawOrders = Array.isArray(data.orders) ? data.orders : [];
 
+    window.lastOrders = rawOrders;
+
     detectNewOrders(rawOrders);
 
     const filtered = getFilteredOrders(rawOrders);
@@ -252,6 +258,21 @@ async function fetchOrders() {
 
     updateCounts(deliveryOrders, pickupOrders);
     bindActionButtons();
+    document.querySelectorAll(".print-btn").forEach(btn => {
+
+      btn.addEventListener("click", () => {
+
+        const ticket = btn.dataset.ticket;
+
+        const order = window.lastOrders.find(o => o.ticket === ticket);
+
+        if(order){
+          printTicket(order);
+        }
+
+      });
+
+    });
 
     const now = new Date().toLocaleTimeString();
     statusEl.textContent = "Conectado";
@@ -267,3 +288,65 @@ filterStatusEl.addEventListener("change", fetchOrders);
 
 fetchOrders();
 setInterval(fetchOrders, 3000);
+
+function printTicket(order){
+
+  const items = (order.items || [])
+    .map(i => `${i.qty}x ${i.name} ${i.config ? "(" + i.config + ")" : ""}  C$${i.price}`)
+    .join("<br>");
+
+  const html = `
+  <html>
+  <head>
+  <title>Ticket</title>
+  <style>
+  body{
+    font-family: monospace;
+    width:280px;
+    padding:10px;
+  }
+  hr{
+    border:none;
+    border-top:1px dashed #000;
+  }
+  </style>
+  </head>
+
+  <body>
+
+  <center>
+  <b>DEACA</b><br>
+  Fritanga Nica
+  </center>
+
+  <hr>
+
+  Ticket: ${order.ticket}<br>
+  Cliente: ${order.customer_name}<br>
+  Tel: ${order.wa_id}<br>
+
+  <hr>
+
+  ${items}
+
+  <hr>
+
+  Total: C$${order.total}<br>
+  Pago: ${order.payment_method}
+
+  <hr>
+
+  Gracias por su compra
+
+  </body>
+  </html>
+  `;
+
+  const win = window.open('', '', 'width=300,height=600');
+
+  win.document.write(html);
+  win.document.close();
+
+  win.focus();
+  win.print();
+}
