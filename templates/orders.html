@@ -5,16 +5,72 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>DEACA Kitchen Display</title>
   <style>
-    body { font-family: system-ui, -apple-system, Arial; margin: 16px; }
-    header { display:flex; justify-content:space-between; align-items:center; gap:12px; }
-    .grid { display:grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap:12px; margin-top:12px;}
-    .card { border:1px solid #ddd; border-radius:12px; padding:12px; }
-    .ticket { font-size:18px; font-weight:700; }
-    .meta { color:#555; font-size:13px; margin-top:4px; }
-    ul { margin:8px 0 0 18px; }
-    .total { font-weight:700; margin-top:8px; }
-    .badge { display:inline-block; padding:4px 8px; border-radius:999px; border:1px solid #ddd; font-size:12px; color:#333; }
-    .topline { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    body {
+      font-family: system-ui, -apple-system, Arial, sans-serif;
+      margin: 16px;
+      background: #f7f7f8;
+      color: #111;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 12px;
+      padding: 12px;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .ticket {
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .meta {
+      color: #555;
+      font-size: 13px;
+      margin-top: 6px;
+      line-height: 1.45;
+    }
+    ul {
+      margin: 10px 0 0 18px;
+    }
+    .total {
+      font-weight: 700;
+      margin-top: 10px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      border: 1px solid #ddd;
+      font-size: 12px;
+      color: #333;
+      background: #fff;
+    }
+    .topline {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    .empty {
+      border: 1px dashed #ccc;
+      border-radius: 12px;
+      padding: 24px;
+      background: #fff;
+      color: #666;
+      text-align: center;
+    }
   </style>
 </head>
 <body>
@@ -29,7 +85,7 @@
   <div class="grid" id="grid"></div>
 
   <script>
-    window.ADMIN_TOKEN = "{{ admin_token }}";
+    window.ADMIN_TOKEN = "{{ admin_token or '' }}";
   </script>
   <script src="/static/orders.js"></script>
 </body>
