@@ -5,84 +5,362 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>DEACA Kitchen Display</title>
   <style>
+    :root{
+      --bg:#f4f5f7;
+      --card:#ffffff;
+      --text:#111827;
+      --muted:#6b7280;
+      --border:#d1d5db;
+      --shadow:0 2px 8px rgba(0,0,0,.06);
+
+      --pending:#f59e0b;
+      --preparing:#2563eb;
+      --onway:#7c3aed;
+      --pickup:#059669;
+      --delivered:#16a34a;
+      --cancelled:#dc2626;
+    }
+
+    * { box-sizing:border-box; }
+
     body {
+      margin: 0;
       font-family: system-ui, -apple-system, Arial, sans-serif;
-      margin: 16px;
-      background: #f7f7f8;
-      color: #111;
+      background: var(--bg);
+      color: var(--text);
     }
+
+    .page {
+      padding: 18px;
+    }
+
     header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      margin-bottom:16px;
+      flex-wrap: wrap;
     }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 12px;
-      margin-top: 12px;
+
+    .title-wrap h1 {
+      margin:0;
+      font-size:28px;
+      line-height:1.1;
     }
-    .card {
-      border: 1px solid #ddd;
-      border-radius: 12px;
-      padding: 12px;
-      background: #fff;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+
+    .subtitle {
+      margin-top:4px;
+      color:var(--muted);
+      font-size:14px;
     }
-    .ticket {
-      font-size: 18px;
-      font-weight: 700;
+
+    .header-right {
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
     }
-    .meta {
-      color: #555;
-      font-size: 13px;
-      margin-top: 6px;
-      line-height: 1.45;
-    }
-    ul {
-      margin: 10px 0 0 18px;
-    }
-    .total {
-      font-weight: 700;
-      margin-top: 10px;
-    }
+
     .badge {
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 999px;
-      border: 1px solid #ddd;
-      font-size: 12px;
-      color: #333;
-      background: #fff;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:8px 12px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#fff;
+      font-size:13px;
+      color:#333;
+      min-height:40px;
     }
-    .topline {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
+
+    .filters {
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      margin-bottom:18px;
     }
+
+    .filter-box {
+      background:#fff;
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:10px 12px;
+      box-shadow:var(--shadow);
+    }
+
+    .filter-box label {
+      font-size:12px;
+      color:var(--muted);
+      display:block;
+      margin-bottom:4px;
+    }
+
+    .filter-box select {
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:8px 10px;
+      font-size:14px;
+      background:#fff;
+      min-width:170px;
+    }
+
+    .boards {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:18px;
+    }
+
+    .board {
+      background:#eef1f4;
+      border-radius:16px;
+      padding:14px;
+      border:1px solid #d8dde4;
+    }
+
+    .board-header {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:12px;
+      gap:10px;
+    }
+
+    .board-title {
+      font-size:22px;
+      font-weight:800;
+      margin:0;
+    }
+
+    .board-count {
+      font-size:13px;
+      color:var(--muted);
+      background:#fff;
+      border:1px solid var(--border);
+      padding:6px 10px;
+      border-radius:999px;
+    }
+
+    .cards {
+      display:grid;
+      gap:14px;
+    }
+
+    .card {
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:14px;
+      box-shadow:var(--shadow);
+    }
+
+    .card-top {
+      display:flex;
+      justify-content:space-between;
+      align-items:flex-start;
+      gap:10px;
+      margin-bottom:8px;
+    }
+
+    .ticket {
+      font-size:22px;
+      font-weight:800;
+      line-height:1.1;
+    }
+
+    .status-pill {
+      padding:7px 12px;
+      border-radius:999px;
+      color:#fff;
+      font-size:12px;
+      font-weight:700;
+      white-space:nowrap;
+      text-transform:uppercase;
+      letter-spacing:.3px;
+    }
+
+    .status-pendiente { background:var(--pending); }
+    .status-preparando { background:var(--preparing); }
+    .status-en_camino { background:var(--onway); }
+    .status-listo_retirar { background:var(--pickup); }
+    .status-entregado { background:var(--delivered); }
+    .status-cancelado { background:var(--cancelled); }
+
+    .card-meta {
+      color:var(--muted);
+      font-size:14px;
+      line-height:1.5;
+      margin-bottom:10px;
+    }
+
+    .line-strong {
+      color:var(--text);
+      font-weight:700;
+    }
+
+    .items {
+      margin:0;
+      padding-left:20px;
+      font-size:15px;
+      line-height:1.55;
+    }
+
+    .items li {
+      margin-bottom:4px;
+    }
+
+    .card-footer {
+      margin-top:12px;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      flex-wrap:wrap;
+    }
+
+    .total {
+      font-size:20px;
+      font-weight:800;
+    }
+
+    .actions {
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+    }
+
+    .btn {
+      border:none;
+      border-radius:10px;
+      padding:10px 12px;
+      font-size:13px;
+      font-weight:700;
+      cursor:pointer;
+      background:#111827;
+      color:#fff;
+    }
+
+    .btn:hover { opacity:.92; }
+
+    .btn-outline {
+      background:#fff;
+      color:#111827;
+      border:1px solid var(--border);
+    }
+
+    .btn-pending { background:var(--pending); color:#fff; }
+    .btn-preparing { background:var(--preparing); color:#fff; }
+    .btn-onway { background:var(--onway); color:#fff; }
+    .btn-pickup { background:var(--pickup); color:#fff; }
+    .btn-delivered { background:var(--delivered); color:#fff; }
+    .btn-cancelled { background:var(--cancelled); color:#fff; }
+
     .empty {
-      border: 1px dashed #ccc;
-      border-radius: 12px;
-      padding: 24px;
-      background: #fff;
-      color: #666;
-      text-align: center;
+      border:1px dashed #b8c0cc;
+      border-radius:16px;
+      padding:24px;
+      background:#fff;
+      color:#6b7280;
+      text-align:center;
+      font-size:15px;
+    }
+
+    .legend {
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-bottom:12px;
+    }
+
+    .legend span {
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:6px 10px;
+      background:#fff;
+      border:1px solid var(--border);
+      border-radius:999px;
+      font-size:12px;
+    }
+
+    .dot {
+      width:10px;
+      height:10px;
+      border-radius:999px;
+      display:inline-block;
+    }
+
+    .dot-pendiente { background:var(--pending); }
+    .dot-preparando { background:var(--preparing); }
+    .dot-en_camino { background:var(--onway); }
+    .dot-listo_retirar { background:var(--pickup); }
+    .dot-entregado { background:var(--delivered); }
+    .dot-cancelado { background:var(--cancelled); }
+
+    @media (max-width: 1100px) {
+      .boards {
+        grid-template-columns:1fr;
+      }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <div style="font-size:20px;font-weight:800;">🍽️ DEACA Kitchen Display</div>
-      <div class="meta">Actualiza automáticamente</div>
-    </div>
-    <div class="badge" id="status">Conectando…</div>
-  </header>
+  <div class="page">
+    <header>
+      <div class="title-wrap">
+        <h1>🍽️ DEACA Kitchen Display</h1>
+        <div class="subtitle">Pedidos en tiempo real para cocina y despacho</div>
+      </div>
 
-  <div class="grid" id="grid"></div>
+      <div class="header-right">
+        <div class="badge" id="status">Conectando…</div>
+        <div class="badge" id="lastUpdate">--</div>
+      </div>
+    </header>
+
+    <div class="filters">
+      <div class="filter-box">
+        <label for="filterStatus">Filtrar por estado</label>
+        <select id="filterStatus">
+          <option value="todos">Todos</option>
+          <option value="pendiente">Pendiente</option>
+          <option value="preparando">Preparando</option>
+          <option value="en_camino">En camino</option>
+          <option value="listo_retirar">Listo retirar</option>
+          <option value="entregado">Entregado</option>
+          <option value="cancelado">Cancelado</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span><i class="dot dot-pendiente"></i> Pendiente</span>
+      <span><i class="dot dot-preparando"></i> Preparando</span>
+      <span><i class="dot dot-en_camino"></i> En camino</span>
+      <span><i class="dot dot-listo_retirar"></i> Listo retirar</span>
+      <span><i class="dot dot-entregado"></i> Entregado</span>
+      <span><i class="dot dot-cancelado"></i> Cancelado</span>
+    </div>
+
+    <div class="boards">
+      <section class="board">
+        <div class="board-header">
+          <h2 class="board-title">🛵 Delivery</h2>
+          <div class="board-count" id="deliveryCount">0 pedidos</div>
+        </div>
+        <div class="cards" id="deliveryGrid"></div>
+      </section>
+
+      <section class="board">
+        <div class="board-header">
+          <h2 class="board-title">🏪 Retiro en local</h2>
+          <div class="board-count" id="pickupCount">0 pedidos</div>
+        </div>
+        <div class="cards" id="pickupGrid"></div>
+      </section>
+    </div>
+  </div>
 
   <script>
     window.ADMIN_TOKEN = "{{ admin_token or '' }}";
