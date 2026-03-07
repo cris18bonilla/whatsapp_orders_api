@@ -8,6 +8,8 @@ const lastUpdateEl = document.getElementById("lastUpdate");
 const deliveryCountEl = document.getElementById("deliveryCount");
 const pickupCountEl = document.getElementById("pickupCount");
 const filterStatusEl = document.getElementById("filterStatus");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+const adminBtn = document.getElementById("adminBtn");
 
 let knownOrderIds = new Set();
 let firstLoad = true;
@@ -20,6 +22,8 @@ const STATUS_PRIORITY = {
   entregado: 4,
   cancelado: 5,
 };
+
+const ACTIVE_STATUSES = ["pendiente", "preparando", "en_camino", "listo_retirar"];
 
 function formatDate(value) {
   if (!value) return "—";
@@ -96,6 +100,9 @@ function sortOrders(orders) {
 function getFilteredOrders(orders) {
   const selected = filterStatusEl.value;
   if (selected === "todos") return orders;
+  if (selected === "activos") {
+    return orders.filter((o) => ACTIVE_STATUSES.includes(o.status));
+  }
   return orders.filter((o) => o.status === selected);
 }
 
@@ -114,7 +121,7 @@ function createActionButtons(order) {
       <button class="btn btn-delivered" data-order-id="${order.id}" data-status="entregado">Entregado</button>
       <button class="btn btn-cancelled" data-order-id="${order.id}" data-status="cancelado">Cancelado</button>
       <button class="btn btn-outline print-btn" data-ticket="${order.ticket}">🖨 Imprimir</button>
- </div>
+    </div>
   `;
 }
 
@@ -213,12 +220,112 @@ function detectNewOrders(orders) {
   firstLoad = false;
 }
 
+function printTicket(order) {
+  const logoUrl = window.LOGO_URL || "/static/logo.png";
+
+  const items = (order.items || [])
+    .map(i => `${i.qty}x ${i.name}${i.config ? " (" + i.config + ")" : ""} .... C$${i.price}`)
+    .join("<br>");
+
+  const ticketBlock = `
+    <div class="ticket-copy">
+      <div class="center">
+        <img src="${logoUrl}" class="logo" alt="DEACA POS"><br>
+        <strong>DEACA POS</strong><br>
+        Fritanga Nica
+      </div>
+
+      <div class="line"></div>
+
+      Ticket: ${order.ticket}<br>
+      Cliente: ${order.customer_name || "Cliente"}<br>
+      Tel: ${order.wa_id || "-"}<br>
+      Entrega: ${order.delivery_mode || "-"}<br>
+      Pago: ${order.payment_method || "-"}<br>
+      Estado: ${humanStatus(order.status)}<br>
+      ${order.district_group ? `Distrito: ${order.district_group}<br>` : ""}
+      ${order.address ? `Dirección: ${order.address}<br>` : ""}
+
+      <div class="line"></div>
+
+      ${items || "Sin items"}
+
+      <div class="line"></div>
+
+      Subtotal: C$${order.subtotal ?? 0}<br>
+      Envío: C$${order.delivery_fee ?? 0}<br>
+      <strong>Total: C$${order.total ?? 0}</strong><br>
+
+      <div class="line"></div>
+
+      Gracias por su compra
+    </div>
+  `;
+
+  const html = `
+  <html>
+  <head>
+    <title>Ticket ${order.ticket}</title>
+    <style>
+      @page {
+        size: 80mm auto;
+        margin: 2mm;
+      }
+      body {
+        font-family: monospace;
+        width: 76mm;
+        margin: 0 auto;
+        padding: 0;
+        font-size: 11px;
+        line-height: 1.35;
+      }
+      .center {
+        text-align: center;
+      }
+      .logo {
+        width: 26mm;
+        height: auto;
+        object-fit: contain;
+      }
+      .line {
+        border-top: 1px dashed #000;
+        margin: 6px 0;
+      }
+      .cut {
+        text-align: center;
+        margin: 8px 0;
+        font-size: 10px;
+      }
+      .ticket-copy {
+        padding-bottom: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    ${ticketBlock}
+    <div class="cut">---------------- COPIA CLIENTE ----------------</div>
+    ${ticketBlock}
+    <script>
+      window.onload = function() {
+        window.focus();
+        window.print();
+      }
+    <\/script>
+  </body>
+  </html>
+  `;
+
+  const win = window.open("", "", "width=420,height=700");
+  win.document.write(html);
+  win.document.close();
+}
+
 async function fetchOrders() {
   try {
     statusEl.textContent = "Actualizando…";
 
     const token = window.ADMIN_TOKEN || "";
-    const res = await fetch(`/admin/api/orders?limit=50&token=${encodeURIComponent(token)}`);
+    const res = await fetch(`/admin/api/orders?limit=100&token=${encodeURIComponent(token)}`);
 
     if (!res.ok) {
       throw new Error("HTTP " + res.status);
@@ -258,20 +365,15 @@ async function fetchOrders() {
 
     updateCounts(deliveryOrders, pickupOrders);
     bindActionButtons();
+
     document.querySelectorAll(".print-btn").forEach(btn => {
-
       btn.addEventListener("click", () => {
-
         const ticket = btn.dataset.ticket;
-
         const order = window.lastOrders.find(o => o.ticket === ticket);
-
-        if(order){
+        if (order) {
           printTicket(order);
         }
-
       });
-
     });
 
     const now = new Date().toLocaleTimeString();
@@ -284,69 +386,28 @@ async function fetchOrders() {
   }
 }
 
-filterStatusEl.addEventListener("change", fetchOrders);
+if (filterStatusEl) {
+  filterStatusEl.addEventListener("change", fetchOrders);
+}
+
+if (fullscreenBtn) {
+  fullscreenBtn.addEventListener("click", async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (e) {
+      console.warn("No se pudo activar pantalla completa", e);
+    }
+  });
+}
+
+if (adminBtn) {
+  const token = encodeURIComponent(window.ADMIN_TOKEN || "");
+  adminBtn.href = `/admin?token=${token}`;
+}
 
 fetchOrders();
 setInterval(fetchOrders, 3000);
-
-function printTicket(order){
-
-  const items = (order.items || [])
-    .map(i => `${i.qty}x ${i.name} ${i.config ? "(" + i.config + ")" : ""}  C$${i.price}`)
-    .join("<br>");
-
-  const html = `
-  <html>
-  <head>
-  <title>Ticket</title>
-  <style>
-  body{
-    font-family: monospace;
-    width:280px;
-    padding:10px;
-  }
-  hr{
-    border:none;
-    border-top:1px dashed #000;
-  }
-  </style>
-  </head>
-
-  <body>
-
-  <center>
-  <b>DEACA</b><br>
-  Fritanga Nica
-  </center>
-
-  <hr>
-
-  Ticket: ${order.ticket}<br>
-  Cliente: ${order.customer_name}<br>
-  Tel: ${order.wa_id}<br>
-
-  <hr>
-
-  ${items}
-
-  <hr>
-
-  Total: C$${order.total}<br>
-  Pago: ${order.payment_method}
-
-  <hr>
-
-  Gracias por su compra
-
-  </body>
-  </html>
-  `;
-
-  const win = window.open('', '', 'width=300,height=600');
-
-  win.document.write(html);
-  win.document.close();
-
-  win.focus();
-  win.print();
-}

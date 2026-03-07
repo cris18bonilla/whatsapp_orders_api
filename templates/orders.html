@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>DEACA Kitchen Display</title>
+  <title>DEACA POS</title>
+  <link rel="icon" href="{{ logo_url or '/static/logo.png' }}">
   <style>
     :root{
       --bg:#f4f5f7;
@@ -43,6 +44,23 @@
       flex-wrap: wrap;
     }
 
+    .brand {
+      display:flex;
+      align-items:center;
+      gap:12px;
+    }
+
+    .brand img {
+      width:56px;
+      height:56px;
+      object-fit:contain;
+      border-radius:12px;
+      background:#fff;
+      padding:6px;
+      border:1px solid var(--border);
+      box-shadow:var(--shadow);
+    }
+
     .title-wrap h1 {
       margin:0;
       font-size:28px;
@@ -73,6 +91,21 @@
       font-size:13px;
       color:#333;
       min-height:40px;
+    }
+
+    .link-btn {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:10px 14px;
+      border-radius:10px;
+      background:#111827;
+      color:#fff;
+      text-decoration:none;
+      font-size:13px;
+      font-weight:700;
+      border:none;
+      cursor:pointer;
     }
 
     .filters {
@@ -308,14 +341,19 @@
 <body>
   <div class="page">
     <header>
-      <div class="title-wrap">
-        <h1>🍽️ DEACA Kitchen Display</h1>
-        <div class="subtitle">Pedidos en tiempo real para cocina y despacho</div>
+      <div class="brand">
+        <img src="{{ logo_url or '/static/logo.png' }}" alt="Logo DEACA POS">
+        <div class="title-wrap">
+          <h1>DEACA POS</h1>
+          <div class="subtitle">Fritanga Nica · Pedidos en tiempo real para cocina y despacho</div>
+        </div>
       </div>
 
       <div class="header-right">
         <div class="badge" id="status">Conectando…</div>
         <div class="badge" id="lastUpdate">--</div>
+        <button class="link-btn" id="fullscreenBtn">Pantalla completa</button>
+        <a class="link-btn" id="adminBtn" href="#">Admin</a>
       </div>
     </header>
 
@@ -323,6 +361,7 @@
       <div class="filter-box">
         <label for="filterStatus">Filtrar por estado</label>
         <select id="filterStatus">
+          <option value="activos">Activos</option>
           <option value="todos">Todos</option>
           <option value="pendiente">Pendiente</option>
           <option value="preparando">Preparando</option>
@@ -364,6 +403,7 @@
 
   <script>
     window.ADMIN_TOKEN = "{{ admin_token or '' }}";
+    window.LOGO_URL = "{{ logo_url or '/static/logo.png' }}";
   </script>
   <script src="/static/orders.js"></script>
 </body>

@@ -21,7 +21,6 @@ class Order(Base):
     district_group = Column(String(80), nullable=True)
     payment_method = Column(String(30), nullable=True)
 
-    # Estado operativo del pedido
     # pendiente / preparando / en_camino / listo_retirar / entregado / cancelado
     status = Column(String(30), nullable=False, default="pendiente", server_default="pendiente")
 

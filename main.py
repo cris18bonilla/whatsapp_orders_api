@@ -6,8 +6,9 @@ from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 
 import requests
+from sqlalchemy import func as sa_func, desc, asc
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import PlainTextResponse, JSONResponse
+from fastapi.responses import PlainTextResponse, JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
@@ -18,7 +19,7 @@ from models import Base, Order, OrderItem
 # ADMIN
 # =========================
 ADMIN_PHONE = os.getenv("ADMIN_PHONE", "").strip()  # ej: "50586907134" (sin +)
-ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()  # opcional para proteger /admin/api/*
+ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()
 
 # ticket_asesor -> cliente_wa_id
 ACTIVE_TICKETS: Dict[str, str] = {}
@@ -28,7 +29,7 @@ CLIENT_TICKET: Dict[str, str] = {}
 # =========================
 # APP
 # =========================
-app = FastAPI(title="WhatsApp Orders API")
+app = FastAPI(title="DEACA POS")
 
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -49,6 +50,7 @@ GRAPH_URL = "https://graph.facebook.com/v22.0"
 DIRECCION = "De la entrada de las fuentes 5c y media al sur mano izquierda"
 HORARIO = "9:00 a.m. a 10:00 p.m."
 SESSION_TTL_SEC = 20 * 60  # 20 minutos
+LOGO_URL = "/static/logo.png"
 
 DELIVERY_GROUPS = [
     ("G1", "Distrito I / V / VII", 40),
@@ -64,6 +66,13 @@ ORDER_STATUSES = {
     "listo_retirar",
     "entregado",
     "cancelado",
+}
+
+ACTIVE_KITCHEN_STATUSES = {
+    "pendiente",
+    "preparando",
+    "en_camino",
+    "listo_retirar",
 }
 
 # =========================
@@ -107,9 +116,22 @@ BEBIDAS: List[Tuple[str, int]] = [
     ("Cebada", 40),
     ("Cálala", 40),
     ("Cacao", 80),
+    ("Café negro", 10),
 ]
 
-EXTRAS: List[Tuple[str, int]] = []
+EXTRAS: List[Tuple[str, int]] = [
+    ("Ensalada", 10),
+    ("Queso", 10),
+    ("Gallo pinto", 10),
+    ("Arroz", 10),
+    ("Frijoles", 10),
+    ("Tortilla", 10),
+    ("Chile", 10),
+    ("Maduro", 10),
+    ("Tajadas", 10),
+    ("Chorizo", 10),
+    ("Huevo entero", 10),
+]
 
 # =========================
 # SESIONES (RAM)
@@ -239,6 +261,40 @@ def notify_customer_order_status(order: Order):
 
 
 # =========================
+# Utilidades DB / API
+# =========================
+def serialize_order(order: Order) -> Dict[str, Any]:
+    items = []
+    for it in getattr(order, "items", []) or []:
+        items.append(
+            {
+                "id": it.id,
+                "name": it.name,
+                "config": it.config,
+                "price": int(it.price),
+                "qty": int(it.qty),
+            }
+        )
+
+    return {
+        "id": order.id,
+        "ticket": order.ticket,
+        "wa_id": order.wa_id,
+        "customer_name": order.customer_name,
+        "delivery_mode": order.delivery_mode,
+        "address": order.address,
+        "district_group": order.district_group,
+        "payment_method": order.payment_method,
+        "status": order.status,
+        "subtotal": int(order.subtotal),
+        "delivery_fee": int(order.delivery_fee),
+        "total": int(order.total),
+        "created_at": order.created_at.isoformat() if getattr(order, "created_at", None) else None,
+        "items": items,
+    }
+
+
+# =========================
 # Utilidades UI
 # =========================
 def short_title(name: str, max_len: int = 22) -> str:
@@ -248,7 +304,7 @@ def short_title(name: str, max_len: int = 22) -> str:
 
 def home_menu(to: str):
     body = (
-        "👋 *Bienvenido*\n\n"
+        "👋 *Bienvenido a DEACA POS*\n\n"
         "Elegí una opción:\n"
         "1) Menú\n"
         "2) Pedir\n"
@@ -282,10 +338,11 @@ def menu_categorias(to: str, title: str = "Elegí una categoría"):
         {"id": "CAT_DESAYUNOS", "title": "1) Desayunos", "description": "Ver opciones"},
         {"id": "CAT_ALMUERZOS", "title": "2) Almuerzos", "description": "Elegí plato + acompañamientos"},
         {"id": "CAT_FRITANGAS", "title": "3) Fritangas", "description": "Elegí plato + acompañamientos"},
-        {"id": "CAT_BEBIDAS", "title": "4) Bebidas", "description": "Frescos y cacao"},
+        {"id": "CAT_BEBIDAS", "title": "4) Bebidas", "description": "Frescos, cacao y café"},
     ]
     if EXTRAS:
         rows.append({"id": "CAT_EXTRAS", "title": "5) Extras", "description": "Agregar adicionales"})
+
     sections = [{"title": "Categorías", "rows": rows}]
     send_list(to, f"📋 *{title}*", "Ver categorías", sections)
 
@@ -569,48 +626,86 @@ def require_admin_token(token: str):
         raise HTTPException(status_code=401, detail="invalid token")
 
 
-@app.get("/admin/api/orders")
-def admin_list_orders(limit: int = 20, token: str = ""):
+@app.get("/admin")
+def admin_home(token: str = ""):
     require_admin_token(token)
-    limit = max(1, min(100, int(limit)))
+    html = f"""
+    <!doctype html>
+    <html lang="es">
+    <head>
+      <meta charset="utf-8" />
+      <title>DEACA POS Admin</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <style>
+        body {{
+          font-family: system-ui, Arial, sans-serif;
+          margin: 0;
+          background: #f4f5f7;
+          color: #111827;
+        }}
+        .wrap {{
+          max-width: 960px;
+          margin: 0 auto;
+          padding: 24px;
+        }}
+        .card {{
+          background: #fff;
+          border: 1px solid #ddd;
+          border-radius: 16px;
+          padding: 20px;
+          margin-bottom: 16px;
+        }}
+        a {{
+          color: #2563eb;
+          text-decoration: none;
+          font-weight: 700;
+        }}
+        code {{
+          background: #f3f4f6;
+          padding: 2px 6px;
+          border-radius: 6px;
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <h1>DEACA POS Admin</h1>
+          <p>Panel administrativo base habilitado.</p>
+          <p><a href="/orders">← Volver a cocina</a></p>
+        </div>
+
+        <div class="card">
+          <h2>Historial por fecha</h2>
+          <p>API: <code>/admin/api/history?date=YYYY-MM-DD&token={token}</code></p>
+        </div>
+
+        <div class="card">
+          <h2>Métricas</h2>
+          <p>API: <code>/admin/api/metrics?token={token}</code></p>
+        </div>
+
+        <div class="card">
+          <h2>Eliminar orden</h2>
+          <p>API: <code>POST /admin/api/orders/&lt;id&gt;/delete?token={token}</code></p>
+          <p>Solo permite eliminar pedidos <strong>entregados</strong> o <strong>cancelados</strong>.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.get("/admin/api/orders")
+def admin_list_orders(limit: int = 50, token: str = ""):
+    require_admin_token(token)
+    limit = max(1, min(200, int(limit)))
 
     db = SessionLocal()
     try:
         orders = db.query(Order).order_by(Order.id.asc()).limit(limit).all()
-
-        result = []
-        for o in orders:
-            items = []
-            for it in getattr(o, "items", []) or []:
-                items.append(
-                    {
-                        "name": it.name,
-                        "config": it.config,
-                        "price": int(it.price),
-                        "qty": int(it.qty),
-                    }
-                )
-
-            result.append(
-                {
-                    "id": o.id,
-                    "ticket": o.ticket,
-                    "wa_id": o.wa_id,
-                    "customer_name": o.customer_name,
-                    "delivery_mode": o.delivery_mode,
-                    "address": o.address,
-                    "district_group": o.district_group,
-                    "payment_method": o.payment_method,
-                    "status": o.status,
-                    "subtotal": int(o.subtotal),
-                    "delivery_fee": int(o.delivery_fee),
-                    "total": int(o.total),
-                    "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None,
-                    "items": items,
-                }
-            )
-
-        return {"ok": True, "orders": result}
+        return {"ok": True, "orders": [serialize_order(o) for o in orders]}
     finally:
         db.close()
 
@@ -649,6 +744,156 @@ async def admin_update_order_status(order_id: int, request: Request, token: str 
         db.close()
 
 
+@app.post("/admin/api/orders/{order_id}/delete")
+def admin_delete_order(order_id: int, token: str = ""):
+    require_admin_token(token)
+
+    db = SessionLocal()
+    try:
+        order = db.query(Order).filter(Order.id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
+
+        if order.status not in {"entregado", "cancelado"}:
+            raise HTTPException(
+                status_code=400,
+                detail="solo se pueden eliminar órdenes entregadas o canceladas",
+            )
+
+        ticket = order.ticket
+        db.delete(order)
+        db.commit()
+
+        return {"ok": True, "deleted_ticket": ticket}
+    finally:
+        db.close()
+
+
+@app.get("/admin/api/history")
+def admin_history(date: str = "", token: str = ""):
+    require_admin_token(token)
+
+    date_value = (date or datetime.utcnow().strftime("%Y-%m-%d")).strip()
+
+    db = SessionLocal()
+    try:
+        orders = (
+            db.query(Order)
+            .filter(sa_func.date(Order.created_at) == date_value)
+            .order_by(Order.id.asc())
+            .all()
+        )
+
+        delivered_or_active = [o for o in orders if o.status != "cancelado"]
+        total_orders = len(delivered_or_active)
+        total_revenue = sum(int(o.total or 0) for o in delivered_or_active)
+
+        delivery_count = sum(1 for o in delivered_or_active if (o.delivery_mode or "").lower() == "delivery")
+        pickup_count = sum(1 for o in delivered_or_active if (o.delivery_mode or "").lower() != "delivery")
+
+        return {
+            "ok": True,
+            "date": date_value,
+            "summary": {
+                "total_orders": total_orders,
+                "total_revenue": total_revenue,
+                "delivery_count": delivery_count,
+                "pickup_count": pickup_count,
+            },
+            "orders": [serialize_order(o) for o in orders],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/admin/api/metrics")
+def admin_metrics(token: str = ""):
+    require_admin_token(token)
+
+    db = SessionLocal()
+    try:
+        total_orders = db.query(sa_func.count(Order.id)).scalar() or 0
+
+        revenue_rows = db.query(sa_func.coalesce(sa_func.sum(Order.total), 0)).filter(Order.status != "cancelado").scalar()
+        total_revenue = int(revenue_rows or 0)
+
+        top_products_rows = (
+            db.query(
+                OrderItem.name,
+                sa_func.coalesce(sa_func.sum(OrderItem.qty), 0).label("qty_sum"),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .filter(Order.status != "cancelado")
+            .group_by(OrderItem.name)
+            .order_by(desc("qty_sum"), asc(OrderItem.name))
+            .limit(5)
+            .all()
+        )
+
+        low_products_rows = (
+            db.query(
+                OrderItem.name,
+                sa_func.coalesce(sa_func.sum(OrderItem.qty), 0).label("qty_sum"),
+            )
+            .join(Order, Order.id == OrderItem.order_id)
+            .filter(Order.status != "cancelado")
+            .group_by(OrderItem.name)
+            .order_by(asc("qty_sum"), asc(OrderItem.name))
+            .limit(5)
+            .all()
+        )
+
+        top_district_rows = (
+            db.query(
+                Order.district_group,
+                sa_func.count(Order.id).label("order_count"),
+            )
+            .filter(Order.status != "cancelado")
+            .filter(Order.district_group.isnot(None))
+            .filter(Order.district_group != "")
+            .group_by(Order.district_group)
+            .order_by(desc("order_count"), asc(Order.district_group))
+            .limit(5)
+            .all()
+        )
+
+        low_district_rows = (
+            db.query(
+                Order.district_group,
+                sa_func.count(Order.id).label("order_count"),
+            )
+            .filter(Order.status != "cancelado")
+            .filter(Order.district_group.isnot(None))
+            .filter(Order.district_group != "")
+            .group_by(Order.district_group)
+            .order_by(asc("order_count"), asc(Order.district_group))
+            .limit(5)
+            .all()
+        )
+
+        return {
+            "ok": True,
+            "summary": {
+                "total_orders": int(total_orders),
+                "total_revenue": total_revenue,
+            },
+            "top_products": [
+                {"name": row[0], "qty": int(row[1] or 0)} for row in top_products_rows
+            ],
+            "low_products": [
+                {"name": row[0], "qty": int(row[1] or 0)} for row in low_products_rows
+            ],
+            "top_districts": [
+                {"district": row[0], "orders": int(row[1] or 0)} for row in top_district_rows
+            ],
+            "low_districts": [
+                {"district": row[0], "orders": int(row[1] or 0)} for row in low_district_rows
+            ],
+        }
+    finally:
+        db.close()
+
+
 # =========================
 # WEBHOOK
 # =========================
@@ -664,6 +909,7 @@ def orders_page(request: Request):
         {
             "request": request,
             "admin_token": ADMIN_API_TOKEN,
+            "logo_url": LOGO_URL,
         },
     )
 
