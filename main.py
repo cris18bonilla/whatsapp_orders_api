@@ -634,75 +634,16 @@ def make_order_ticket(order_id: int) -> str:
 # ADMIN API
 # =========================
 @app.get("/admin")
-def admin_home(token: str = ""):
+def admin_home(request: Request, token: str = ""):
     require_admin_token(token)
-    html = f"""
-    <!doctype html>
-    <html lang="es">
-    <head>
-      <meta charset="utf-8" />
-      <title>DEACA POS Admin</title>
-      <meta name="viewport" content="width=device-width,initial-scale=1" />
-      <style>
-        body {{
-          font-family: system-ui, Arial, sans-serif;
-          margin: 0;
-          background: #f4f5f7;
-          color: #111827;
-        }}
-        .wrap {{
-          max-width: 960px;
-          margin: 0 auto;
-          padding: 24px;
-        }}
-        .card {{
-          background: #fff;
-          border: 1px solid #ddd;
-          border-radius: 16px;
-          padding: 20px;
-          margin-bottom: 16px;
-        }}
-        a {{
-          color: #2563eb;
-          text-decoration: none;
-          font-weight: 700;
-        }}
-        code {{
-          background: #f3f4f6;
-          padding: 2px 6px;
-          border-radius: 6px;
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="wrap">
-        <div class="card">
-          <h1>DEACA POS Admin</h1>
-          <p>Panel administrativo base habilitado.</p>
-          <p><a href="/orders">← Volver a cocina</a></p>
-        </div>
-
-        <div class="card">
-          <h2>Historial por fecha</h2>
-          <p>API: <code>/admin/api/history?date=YYYY-MM-DD&token={token}</code></p>
-        </div>
-
-        <div class="card">
-          <h2>Métricas</h2>
-          <p>API: <code>/admin/api/metrics?token={token}</code></p>
-        </div>
-
-        <div class="card">
-          <h2>Acciones protegidas con PIN</h2>
-          <p>Entregado: retirar de pantalla.</p>
-          <p>Cancelado: eliminar cancelado.</p>
-        </div>
-      </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
-
+    return templates.TemplateResponse(
+        "admin.html",
+        {
+            "request": request,
+            "admin_token": ADMIN_API_TOKEN,
+            "logo_url": LOGO_URL,
+        },
+    )
 
 @app.get("/admin/api/orders")
 def admin_list_orders(limit: int = 100, token: str = ""):
