@@ -18,8 +18,9 @@ from models import Base, Order, OrderItem
 # =========================
 # ADMIN
 # =========================
-ADMIN_PHONE = os.getenv("ADMIN_PHONE", "").strip()  # ej: "50586907134" (sin +)
+ADMIN_PHONE = os.getenv("ADMIN_PHONE", "").strip()
 ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()
+ADMIN_PIN = os.getenv("ADMIN_PIN", "").strip()
 
 # ticket_asesor -> cliente_wa_id
 ACTIVE_TICKETS: Dict[str, str] = {}
@@ -49,7 +50,7 @@ GRAPH_URL = "https://graph.facebook.com/v22.0"
 # =========================
 DIRECCION = "De la entrada de las fuentes 5c y media al sur mano izquierda"
 HORARIO = "9:00 a.m. a 10:00 p.m."
-SESSION_TTL_SEC = 20 * 60  # 20 minutos
+SESSION_TTL_SEC = 20 * 60
 LOGO_URL = "/static/logo.png"
 
 DELIVERY_GROUPS = [
@@ -241,9 +242,7 @@ def notify_customer_order_status(order: Order):
             "Pronto llegará a tu dirección."
         )
     elif status == "listo_retirar":
-        msg = (
-            f"📦 Tu pedido *{order.ticket}* ya está listo para retirar en el local."
-        )
+        msg = f"📦 Tu pedido *{order.ticket}* ya está listo para retirar en el local."
     elif status == "entregado":
         msg = (
             f"✅ Tu pedido *{order.ticket}* fue entregado.\n"
@@ -261,8 +260,20 @@ def notify_customer_order_status(order: Order):
 
 
 # =========================
-# Utilidades DB / API
+# Admin helpers
 # =========================
+def require_admin_token(token: str):
+    if ADMIN_API_TOKEN and token != ADMIN_API_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid token")
+
+
+def require_admin_pin(pin: str):
+    if not ADMIN_PIN:
+        raise HTTPException(status_code=500, detail="ADMIN_PIN no configurado en Render")
+    if (pin or "").strip() != ADMIN_PIN:
+        raise HTTPException(status_code=401, detail="pin incorrecto")
+
+
 def serialize_order(order: Order) -> Dict[str, Any]:
     items = []
     for it in getattr(order, "items", []) or []:
@@ -286,6 +297,7 @@ def serialize_order(order: Order) -> Dict[str, Any]:
         "district_group": order.district_group,
         "payment_method": order.payment_method,
         "status": order.status,
+        "hidden_from_kds": bool(order.hidden_from_kds),
         "subtotal": int(order.subtotal),
         "delivery_fee": int(order.delivery_fee),
         "total": int(order.total),
@@ -621,11 +633,6 @@ def make_order_ticket(order_id: int) -> str:
 # =========================
 # ADMIN API
 # =========================
-def require_admin_token(token: str):
-    if ADMIN_API_TOKEN and token != ADMIN_API_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid token")
-
-
 @app.get("/admin")
 def admin_home(token: str = ""):
     require_admin_token(token)
@@ -686,9 +693,9 @@ def admin_home(token: str = ""):
         </div>
 
         <div class="card">
-          <h2>Eliminar orden</h2>
-          <p>API: <code>POST /admin/api/orders/&lt;id&gt;/delete?token={token}</code></p>
-          <p>Solo permite eliminar pedidos <strong>entregados</strong> o <strong>cancelados</strong>.</p>
+          <h2>Acciones protegidas con PIN</h2>
+          <p>Entregado: retirar de pantalla.</p>
+          <p>Cancelado: eliminar cancelado.</p>
         </div>
       </div>
     </body>
@@ -698,7 +705,7 @@ def admin_home(token: str = ""):
 
 
 @app.get("/admin/api/orders")
-def admin_list_orders(limit: int = 50, token: str = ""):
+def admin_list_orders(limit: int = 100, token: str = ""):
     require_admin_token(token)
     limit = max(1, min(200, int(limit)))
 
@@ -738,15 +745,19 @@ async def admin_update_order_status(order_id: int, request: Request, token: str 
                 "id": order.id,
                 "ticket": order.ticket,
                 "status": order.status,
+                "hidden_from_kds": bool(order.hidden_from_kds),
             },
         }
     finally:
         db.close()
 
 
-@app.post("/admin/api/orders/{order_id}/delete")
-def admin_delete_order(order_id: int, token: str = ""):
+@app.post("/admin/api/orders/{order_id}/hide")
+async def admin_hide_order_from_kds(order_id: int, request: Request, token: str = ""):
     require_admin_token(token)
+
+    payload = await request.json()
+    require_admin_pin(str(payload.get("pin", "")))
 
     db = SessionLocal()
     try:
@@ -754,11 +765,40 @@ def admin_delete_order(order_id: int, token: str = ""):
         if not order:
             raise HTTPException(status_code=404, detail="order not found")
 
-        if order.status not in {"entregado", "cancelado"}:
-            raise HTTPException(
-                status_code=400,
-                detail="solo se pueden eliminar órdenes entregadas o canceladas",
-            )
+        if order.status != "entregado":
+            raise HTTPException(status_code=400, detail="solo se pueden retirar pedidos entregados")
+
+        order.hidden_from_kds = True
+        db.commit()
+        db.refresh(order)
+
+        return {
+            "ok": True,
+            "order": {
+                "id": order.id,
+                "ticket": order.ticket,
+                "hidden_from_kds": True,
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/api/orders/{order_id}/delete-cancelled")
+async def admin_delete_cancelled_order(order_id: int, request: Request, token: str = ""):
+    require_admin_token(token)
+
+    payload = await request.json()
+    require_admin_pin(str(payload.get("pin", "")))
+
+    db = SessionLocal()
+    try:
+        order = db.query(Order).filter(Order.id == order_id).first()
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
+
+        if order.status != "cancelado":
+            raise HTTPException(status_code=400, detail="solo se pueden eliminar pedidos cancelados")
 
         ticket = order.ticket
         db.delete(order)
@@ -784,12 +824,12 @@ def admin_history(date: str = "", token: str = ""):
             .all()
         )
 
-        delivered_or_active = [o for o in orders if o.status != "cancelado"]
-        total_orders = len(delivered_or_active)
-        total_revenue = sum(int(o.total or 0) for o in delivered_or_active)
+        # cancelados eliminados ya no existirán; los entregados ocultos sí cuentan
+        total_orders = len(orders)
+        total_revenue = sum(int(o.total or 0) for o in orders)
 
-        delivery_count = sum(1 for o in delivered_or_active if (o.delivery_mode or "").lower() == "delivery")
-        pickup_count = sum(1 for o in delivered_or_active if (o.delivery_mode or "").lower() != "delivery")
+        delivery_count = sum(1 for o in orders if (o.delivery_mode or "").lower() == "delivery")
+        pickup_count = sum(1 for o in orders if (o.delivery_mode or "").lower() != "delivery")
 
         return {
             "ok": True,
@@ -813,9 +853,9 @@ def admin_metrics(token: str = ""):
     db = SessionLocal()
     try:
         total_orders = db.query(sa_func.count(Order.id)).scalar() or 0
-
-        revenue_rows = db.query(sa_func.coalesce(sa_func.sum(Order.total), 0)).filter(Order.status != "cancelado").scalar()
-        total_revenue = int(revenue_rows or 0)
+        total_revenue = int(
+            db.query(sa_func.coalesce(sa_func.sum(Order.total), 0)).scalar() or 0
+        )
 
         top_products_rows = (
             db.query(
@@ -823,7 +863,6 @@ def admin_metrics(token: str = ""):
                 sa_func.coalesce(sa_func.sum(OrderItem.qty), 0).label("qty_sum"),
             )
             .join(Order, Order.id == OrderItem.order_id)
-            .filter(Order.status != "cancelado")
             .group_by(OrderItem.name)
             .order_by(desc("qty_sum"), asc(OrderItem.name))
             .limit(5)
@@ -836,7 +875,6 @@ def admin_metrics(token: str = ""):
                 sa_func.coalesce(sa_func.sum(OrderItem.qty), 0).label("qty_sum"),
             )
             .join(Order, Order.id == OrderItem.order_id)
-            .filter(Order.status != "cancelado")
             .group_by(OrderItem.name)
             .order_by(asc("qty_sum"), asc(OrderItem.name))
             .limit(5)
@@ -848,7 +886,6 @@ def admin_metrics(token: str = ""):
                 Order.district_group,
                 sa_func.count(Order.id).label("order_count"),
             )
-            .filter(Order.status != "cancelado")
             .filter(Order.district_group.isnot(None))
             .filter(Order.district_group != "")
             .group_by(Order.district_group)
@@ -862,7 +899,6 @@ def admin_metrics(token: str = ""):
                 Order.district_group,
                 sa_func.count(Order.id).label("order_count"),
             )
-            .filter(Order.status != "cancelado")
             .filter(Order.district_group.isnot(None))
             .filter(Order.district_group != "")
             .group_by(Order.district_group)
@@ -877,22 +913,20 @@ def admin_metrics(token: str = ""):
                 "total_orders": int(total_orders),
                 "total_revenue": total_revenue,
             },
-            "top_products": [
-                {"name": row[0], "qty": int(row[1] or 0)} for row in top_products_rows
-            ],
-            "low_products": [
-                {"name": row[0], "qty": int(row[1] or 0)} for row in low_products_rows
-            ],
-            "top_districts": [
-                {"district": row[0], "orders": int(row[1] or 0)} for row in top_district_rows
-            ],
-            "low_districts": [
-                {"district": row[0], "orders": int(row[1] or 0)} for row in low_district_rows
-            ],
+            "top_products": [{"name": row[0], "qty": int(row[1] or 0)} for row in top_products_rows],
+            "low_products": [{"name": row[0], "qty": int(row[1] or 0)} for row in low_products_rows],
+            "top_districts": [{"district": row[0], "orders": int(row[1] or 0)} for row in top_district_rows],
+            "low_districts": [{"district": row[0], "orders": int(row[1] or 0)} for row in low_district_rows],
         }
     finally:
         db.close()
 
+@app.post("/admin/api/pin-check")
+async def admin_pin_check(request: Request, token: str = ""):
+    require_admin_token(token)
+    payload = await request.json()
+    require_admin_pin(str(payload.get("pin", "")))
+    return {"ok": True}
 
 # =========================
 # WEBHOOK
@@ -1416,6 +1450,7 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
                 district_group=dg,
                 payment_method=pay_method,
                 status="pendiente",
+                hidden_from_kds=False,
                 subtotal=subtotal,
                 delivery_fee=fee,
                 total=total,

@@ -13,6 +13,7 @@ const adminBtn = document.getElementById("adminBtn");
 
 let knownOrderIds = new Set();
 let firstLoad = true;
+let adminUnlocked = false;
 
 const STATUS_PRIORITY = {
   pendiente: 1,
@@ -97,6 +98,10 @@ function sortOrders(orders) {
   });
 }
 
+function getVisibleKdsOrders(orders) {
+  return orders.filter((o) => !o.hidden_from_kds);
+}
+
 function getFilteredOrders(orders) {
   const selected = filterStatusEl.value;
   if (selected === "todos") return orders;
@@ -108,6 +113,13 @@ function getFilteredOrders(orders) {
 
 function createActionButtons(order) {
   const isDelivery = (order.delivery_mode || "").toLowerCase() === "delivery";
+
+  let extraAction = "";
+  if (order.status === "entregado") {
+    extraAction = `<button class="btn btn-outline hide-btn" data-order-id="${order.id}">Retirar de pantalla</button>`;
+  } else if (order.status === "cancelado") {
+    extraAction = `<button class="btn btn-outline delete-cancelled-btn" data-order-id="${order.id}">Eliminar cancelado</button>`;
+  }
 
   return `
     <div class="actions">
@@ -121,6 +133,7 @@ function createActionButtons(order) {
       <button class="btn btn-delivered" data-order-id="${order.id}" data-status="entregado">Entregado</button>
       <button class="btn btn-cancelled" data-order-id="${order.id}" data-status="cancelado">Cancelado</button>
       <button class="btn btn-outline print-btn" data-ticket="${order.ticket}">🖨 Imprimir</button>
+      ${extraAction}
     </div>
   `;
 }
@@ -161,11 +174,7 @@ function renderCard(order) {
 }
 
 function renderEmpty(target, text) {
-  target.innerHTML = `
-    <div class="empty">
-      ${escapeHtml(text)}
-    </div>
-  `;
+  target.innerHTML = `<div class="empty">${escapeHtml(text)}</div>`;
 }
 
 function updateCounts(deliveryOrders, pickupOrders) {
@@ -186,9 +195,7 @@ async function updateOrderStatus(orderId, status) {
       body: JSON.stringify({ status }),
     });
 
-    if (!res.ok) {
-      throw new Error("HTTP " + res.status);
-    }
+    if (!res.ok) throw new Error("HTTP " + res.status);
 
     await fetchOrders();
   } catch (e) {
@@ -198,12 +205,83 @@ async function updateOrderStatus(orderId, status) {
   }
 }
 
+async function hideDeliveredOrder(orderId) {
+  const pin = window.prompt("Ingresa el PIN admin para retirar este pedido de pantalla:");
+  if (!pin) return;
+
+  try {
+    statusEl.textContent = "Retirando pedido…";
+
+    const token = window.ADMIN_TOKEN || "";
+    const res = await fetch(`/admin/api/orders/${orderId}/hide?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || ("HTTP " + res.status));
+    }
+
+    await fetchOrders();
+  } catch (e) {
+    console.error("hideDeliveredOrder error:", e);
+    alert(`No se pudo retirar el pedido: ${e.message}`);
+    statusEl.textContent = "Error al retirar";
+  }
+}
+
+async function deleteCancelledOrder(orderId) {
+  const pin = window.prompt("Ingresa el PIN admin para eliminar este pedido cancelado:");
+  if (!pin) return;
+
+  const ok = window.confirm("Esta acción eliminará el pedido cancelado de la base de datos. ¿Deseas continuar?");
+  if (!ok) return;
+
+  try {
+    statusEl.textContent = "Eliminando cancelado…";
+
+    const token = window.ADMIN_TOKEN || "";
+    const res = await fetch(`/admin/api/orders/${orderId}/delete-cancelled?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || ("HTTP " + res.status));
+    }
+
+    await fetchOrders();
+  } catch (e) {
+    console.error("deleteCancelledOrder error:", e);
+    alert(`No se pudo eliminar el pedido cancelado: ${e.message}`);
+    statusEl.textContent = "Error al eliminar";
+  }
+}
+
 function bindActionButtons() {
   document.querySelectorAll("[data-order-id][data-status]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const orderId = btn.getAttribute("data-order-id");
       const status = btn.getAttribute("data-status");
       await updateOrderStatus(orderId, status);
+    });
+  });
+
+  document.querySelectorAll(".hide-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const orderId = btn.getAttribute("data-order-id");
+      await hideDeliveredOrder(orderId);
+    });
+  });
+
+  document.querySelectorAll(".delete-cancelled-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const orderId = btn.getAttribute("data-order-id");
+      await deleteCancelledOrder(orderId);
     });
   });
 }
@@ -267,10 +345,7 @@ function printTicket(order) {
   <head>
     <title>Ticket ${order.ticket}</title>
     <style>
-      @page {
-        size: 80mm auto;
-        margin: 2mm;
-      }
+      @page { size: 80mm auto; margin: 2mm; }
       body {
         font-family: monospace;
         width: 76mm;
@@ -279,26 +354,11 @@ function printTicket(order) {
         font-size: 11px;
         line-height: 1.35;
       }
-      .center {
-        text-align: center;
-      }
-      .logo {
-        width: 26mm;
-        height: auto;
-        object-fit: contain;
-      }
-      .line {
-        border-top: 1px dashed #000;
-        margin: 6px 0;
-      }
-      .cut {
-        text-align: center;
-        margin: 8px 0;
-        font-size: 10px;
-      }
-      .ticket-copy {
-        padding-bottom: 8px;
-      }
+      .center { text-align: center; }
+      .logo { width: 26mm; height: auto; object-fit: contain; }
+      .line { border-top: 1px dashed #000; margin: 6px 0; }
+      .cut { text-align: center; margin: 8px 0; font-size: 10px; }
+      .ticket-copy { padding-bottom: 8px; }
     </style>
   </head>
   <body>
@@ -320,6 +380,62 @@ function printTicket(order) {
   win.document.close();
 }
 
+function promptAdminPin() {
+  const pin = window.prompt("Ingresa el PIN admin:");
+  if (!pin) return null;
+  return pin;
+}
+
+async function validateAdminPin(pin) {
+  try {
+    const token = window.ADMIN_TOKEN || "";
+    const res = await fetch(`/admin/api/metrics?token=${encodeURIComponent(token)}`, {
+      method: "GET",
+      headers: {
+        "X-Admin-Pin": pin,
+      },
+    });
+
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function handleAdminAccess(event) {
+  event.preventDefault();
+
+  if (adminUnlocked) {
+    const token = encodeURIComponent(window.ADMIN_TOKEN || "");
+    window.location.href = `/admin?token=${token}`;
+    return;
+  }
+
+  const pin = promptAdminPin();
+  if (!pin) return;
+
+  try {
+    const token = window.ADMIN_TOKEN || "";
+    const res = await fetch(`/admin/api/pin-check?token=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    });
+
+    if (!res.ok) {
+      alert("PIN incorrecto.");
+      return;
+    }
+
+    adminUnlocked = true;
+    const encodedToken = encodeURIComponent(window.ADMIN_TOKEN || "");
+    window.location.href = `/admin?token=${encodedToken}`;
+  } catch (e) {
+    console.error("handleAdminAccess error:", e);
+    alert("No se pudo validar el PIN.");
+  }
+}
+
 async function fetchOrders() {
   try {
     statusEl.textContent = "Actualizando…";
@@ -327,18 +443,17 @@ async function fetchOrders() {
     const token = window.ADMIN_TOKEN || "";
     const res = await fetch(`/admin/api/orders?limit=100&token=${encodeURIComponent(token)}`);
 
-    if (!res.ok) {
-      throw new Error("HTTP " + res.status);
-    }
+    if (!res.ok) throw new Error("HTTP " + res.status);
 
     const data = await res.json();
     const rawOrders = Array.isArray(data.orders) ? data.orders : [];
 
     window.lastOrders = rawOrders;
 
-    detectNewOrders(rawOrders);
+    const visibleOrders = getVisibleKdsOrders(rawOrders);
+    detectNewOrders(visibleOrders);
 
-    const filtered = getFilteredOrders(rawOrders);
+    const filtered = getFilteredOrders(visibleOrders);
     const sorted = sortOrders(filtered);
 
     const deliveryOrders = sorted.filter(
@@ -370,9 +485,7 @@ async function fetchOrders() {
       btn.addEventListener("click", () => {
         const ticket = btn.dataset.ticket;
         const order = window.lastOrders.find(o => o.ticket === ticket);
-        if (order) {
-          printTicket(order);
-        }
+        if (order) printTicket(order);
       });
     });
 
@@ -405,8 +518,7 @@ if (fullscreenBtn) {
 }
 
 if (adminBtn) {
-  const token = encodeURIComponent(window.ADMIN_TOKEN || "");
-  adminBtn.href = `/admin?token=${token}`;
+  adminBtn.addEventListener("click", handleAdminAccess);
 }
 
 fetchOrders();
