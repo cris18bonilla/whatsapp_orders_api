@@ -8,6 +8,7 @@ class Order(Base):
     __tablename__ = "orders"
 
     id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, index=True, nullable=False, default=1, server_default="1")
     ticket = Column(String(32), unique=True, nullable=False)
     wa_id = Column(String(32), index=True, nullable=False)
 

@@ -336,10 +336,10 @@
   <div class="page">
     <header>
       <div class="brand">
-        <img src="{{ logo_url or '/static/logo.png' }}" alt="Logo DEACA POS">
+        <img src="{{ logo_url or '/static/logo.png' }}" alt="{{ restaurant_name or 'Restaurant POS' }}">
         <div class="title-wrap">
-          <h1>DEACA POS</h1>
-          <div class="subtitle">Fritanga Nica · Pedidos en tiempo real para cocina y despacho</div>
+          <h1>{{ restaurant_name or 'Restaurant POS' }}</h1>
+          <div class="subtitle">{{ restaurant_tagline or 'Pedidos en tiempo real para cocina y despacho' }}</div>
         </div>
       </div>
 
@@ -398,7 +398,8 @@
   <script>
     window.ADMIN_TOKEN = "{{ admin_token or '' }}";
     window.LOGO_URL = "{{ logo_url or '/static/logo.png' }}";
+    window.RESTAURANT_SLUG = "{{ restaurant_slug or 'deaca' }}";
   </script>
-  <script src="/static/orders.js"></script>
+
 </body>
 </html>

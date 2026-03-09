@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from db import engine, SessionLocal
 from models import Base, Order, OrderItem
+from restaurant_context import get_default_restaurant, get_restaurant_by_slug
 
 # =========================
 # ADMIN
@@ -31,6 +32,23 @@ CLIENT_TICKET: Dict[str, str] = {}
 # APP
 # =========================
 app = FastAPI(title="DEACA POS")
+
+def resolve_restaurant(request: Request):
+    slug = request.query_params.get("restaurant")
+
+    if slug:
+        restaurant = get_restaurant_by_slug(slug)
+        if restaurant:
+            return restaurant
+
+    return get_default_restaurant()
+default_restaurant = get_default_restaurant()
+
+DEFAULT_RESTAURANT_ID = default_restaurant.id if default_restaurant else None
+DEFAULT_RESTAURANT_SLUG = default_restaurant.slug if default_restaurant else "deaca"
+
+print("DEFAULT_RESTAURANT_ID =", DEFAULT_RESTAURANT_ID)
+print("DEFAULT_RESTAURANT_SLUG =", DEFAULT_RESTAURANT_SLUG)
 
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -646,21 +664,30 @@ def admin_home(request: Request, token: str = ""):
     )
 
 @app.get("/admin/api/orders")
-def admin_list_orders(limit: int = 100, token: str = ""):
+def admin_list_orders(request: Request, limit: int = 100, token: str = ""):
     require_admin_token(token)
     limit = max(1, min(200, int(limit)))
 
     db = SessionLocal()
     try:
-        orders = db.query(Order).order_by(Order.id.asc()).limit(limit).all()
+        restaurant = resolve_restaurant(request)
+
+        orders = (
+            db.query(Order)
+            .filter(Order.restaurant_id == restaurant.id)
+            .order_by(Order.id.asc())
+            .limit(limit)
+            .all()
+        )
+
         return {"ok": True, "orders": [serialize_order(o) for o in orders]}
     finally:
         db.close()
 
-
 @app.post("/admin/api/orders/{order_id}/status")
 async def admin_update_order_status(order_id: int, request: Request, token: str = ""):
     require_admin_token(token)
+    restaurant = resolve_restaurant(request)
 
     payload = await request.json()
     new_status = str(payload.get("status", "")).strip()
@@ -670,7 +697,15 @@ async def admin_update_order_status(order_id: int, request: Request, token: str 
 
     db = SessionLocal()
     try:
-        order = db.query(Order).filter(Order.id == order_id).first()
+        order = (
+            db.query(Order)
+            .filter(
+                Order.id == order_id,
+                Order.restaurant_id == restaurant.id,
+            )
+            .first()
+        )
+
         if not order:
             raise HTTPException(status_code=404, detail="order not found")
 
@@ -692,17 +727,28 @@ async def admin_update_order_status(order_id: int, request: Request, token: str 
     finally:
         db.close()
 
-
 @app.post("/admin/api/orders/{order_id}/hide")
-async def admin_hide_order_from_kds(order_id: int, request: Request, token: str = ""):
+async def admin_hide_order(order_id: int, request: Request, token: str = ""):
     require_admin_token(token)
 
+    restaurant = resolve_restaurant(request)
     payload = await request.json()
-    require_admin_pin(str(payload.get("pin", "")))
+    pin = str(payload.get("pin", "")).strip()
+
+    if ADMIN_PIN and pin != ADMIN_PIN:
+        raise HTTPException(status_code=401, detail="PIN inválido")
 
     db = SessionLocal()
     try:
-        order = db.query(Order).filter(Order.id == order_id).first()
+        order = (
+            db.query(Order)
+            .filter(
+                Order.id == order_id,
+                Order.restaurant_id == restaurant.id,
+            )
+            .first()
+        )
+
         if not order:
             raise HTTPException(status_code=404, detail="order not found")
 
@@ -711,30 +757,30 @@ async def admin_hide_order_from_kds(order_id: int, request: Request, token: str 
 
         order.hidden_from_kds = True
         db.commit()
-        db.refresh(order)
 
-        return {
-            "ok": True,
-            "order": {
-                "id": order.id,
-                "ticket": order.ticket,
-                "hidden_from_kds": True,
-            },
-        }
+        return {"ok": True, "hidden_order_id": order.id}
     finally:
         db.close()
-
 
 @app.post("/admin/api/orders/{order_id}/delete-cancelled")
 async def admin_delete_cancelled_order(order_id: int, request: Request, token: str = ""):
     require_admin_token(token)
 
+    restaurant = resolve_restaurant(request)
     payload = await request.json()
     require_admin_pin(str(payload.get("pin", "")))
 
     db = SessionLocal()
     try:
-        order = db.query(Order).filter(Order.id == order_id).first()
+        order = (
+            db.query(Order)
+            .filter(
+                Order.id == order_id,
+                Order.restaurant_id == restaurant.id,
+            )
+            .first()
+        )
+
         if not order:
             raise HTTPException(status_code=404, detail="order not found")
 
@@ -748,7 +794,6 @@ async def admin_delete_cancelled_order(order_id: int, request: Request, token: s
         return {"ok": True, "deleted_ticket": ticket}
     finally:
         db.close()
-
 
 @app.get("/admin/api/history")
 def admin_history(date: str = "", token: str = ""):
@@ -876,18 +921,21 @@ async def admin_pin_check(request: Request, token: str = ""):
 def health():
     return {"ok": True}
 
-
 @app.get("/orders")
 def orders_page(request: Request):
+    restaurant = resolve_restaurant(request)
+
     return templates.TemplateResponse(
         "orders.html",
         {
             "request": request,
             "admin_token": ADMIN_API_TOKEN,
-            "logo_url": LOGO_URL,
+            "logo_url": restaurant.logo_url if getattr(restaurant, "logo_url", None) else LOGO_URL,
+            "restaurant_name": restaurant.brand_name if getattr(restaurant, "brand_name", None) else restaurant.name,
+            "restaurant_tagline": restaurant.tagline if getattr(restaurant, "tagline", None) else "Pedidos en tiempo real para cocina y despacho",
+            "restaurant_slug": restaurant.slug,
         },
     )
-
 
 @app.get("/webhook/whatsapp")
 async def whatsapp_verify(request: Request):
@@ -1382,7 +1430,10 @@ async def handle_interactive(user_id: str, session: Dict[str, Any], iid: str):
             subtotal = cart_total(session["cart"])
             total = subtotal + fee
 
+            restaurant = resolve_restaurant(request)
+
             order = Order(
+                restaurant_id=restaurant.id,
                 ticket="",
                 wa_id=user_id,
                 customer_name=name,

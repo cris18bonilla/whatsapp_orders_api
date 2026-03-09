@@ -10,6 +10,8 @@ const pickupCountEl = document.getElementById("pickupCount");
 const filterStatusEl = document.getElementById("filterStatus");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
 const adminBtn = document.getElementById("adminBtn");
+const token = window.ADMIN_TOKEN || "";
+const restaurantSlug = window.RESTAURANT_SLUG || "deaca";
 
 let knownOrderIds = new Set();
 let firstLoad = true;
@@ -187,7 +189,7 @@ async function updateOrderStatus(orderId, status) {
     statusEl.textContent = "Actualizando estado…";
 
     const token = window.ADMIN_TOKEN || "";
-    const res = await fetch(`/admin/api/orders/${orderId}/status?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(`/admin/api/orders/${orderId}/status?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -213,12 +215,12 @@ async function hideDeliveredOrder(orderId) {
     statusEl.textContent = "Retirando pedido…";
 
     const token = window.ADMIN_TOKEN || "";
-    const res = await fetch(`/admin/api/orders/${orderId}/hide?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(`/admin/api/orders/${orderId}/hide?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, { 
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pin }),
-    });
-
+    });    
+{
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || ("HTTP " + res.status));
@@ -243,7 +245,7 @@ async function deleteCancelledOrder(orderId) {
     statusEl.textContent = "Eliminando cancelado…";
 
     const token = window.ADMIN_TOKEN || "";
-    const res = await fetch(`/admin/api/orders/${orderId}/delete-cancelled?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(`/admin/api/orders/${orderId}/delete-cancelled?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pin }),
@@ -441,7 +443,7 @@ async function fetchOrders() {
     statusEl.textContent = "Actualizando…";
 
     const token = window.ADMIN_TOKEN || "";
-    const res = await fetch(`/admin/api/orders?limit=100&token=${encodeURIComponent(token)}`);
+    const res = await fetch(`/admin/api/orders?restaurant==${encodeURIComponent(restaurantSlug)}&limit=100&token=${encodeURIComponent(token)}`);
 
     if (!res.ok) throw new Error("HTTP " + res.status);
 
