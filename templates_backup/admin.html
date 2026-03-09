@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>DEACA POS Admin</title>
+  <link rel="icon" href="{{ logo_url or '/static/logo.png' }}">
+  <style>
+    :root{
+      --bg:#f4f5f7;
+      --card:#ffffff;
+      --text:#111827;
+      --muted:#6b7280;
+      --border:#d1d5db;
+      --shadow:0 2px 8px rgba(0,0,0,.06);
+      --primary:#111827;
+      --green:#16a34a;
+      --red:#dc2626;
+      --blue:#2563eb;
+    }
+    * { box-sizing:border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    header {
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      margin-bottom:18px;
+      flex-wrap:wrap;
+    }
+    .brand {
+      display:flex;
+      align-items:center;
+      gap:12px;
+    }
+    .brand img {
+      width:56px;
+      height:56px;
+      object-fit:contain;
+      border-radius:12px;
+      background:#fff;
+      padding:6px;
+      border:1px solid var(--border);
+      box-shadow:var(--shadow);
+    }
+    .title h1 {
+      margin:0;
+      font-size:30px;
+      line-height:1.1;
+    }
+    .subtitle {
+      margin-top:4px;
+      color:var(--muted);
+      font-size:14px;
+    }
+    .header-actions {
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .pill {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      padding:8px 12px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:#fff;
+      font-size:13px;
+      min-height:40px;
+    }
+    .btn {
+      border:none;
+      border-radius:10px;
+      padding:10px 14px;
+      font-size:14px;
+      font-weight:700;
+      cursor:pointer;
+      background:var(--primary);
+      color:#fff;
+      text-decoration:none;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .btn-outline {
+      background:#fff;
+      color:var(--primary);
+      border:1px solid var(--border);
+    }
+    .grid {
+      display:grid;
+      grid-template-columns: 1.1fr 1fr;
+      gap:16px;
+    }
+    .stack {
+      display:grid;
+      gap:16px;
+    }
+    .card {
+      background:var(--card);
+      border:1px solid var(--border);
+      border-radius:16px;
+      padding:16px;
+      box-shadow:var(--shadow);
+    }
+    .card h2 {
+      margin:0 0 12px 0;
+      font-size:24px;
+    }
+    .card h3 {
+      margin:0 0 10px 0;
+      font-size:18px;
+    }
+    .muted {
+      color:var(--muted);
+      font-size:14px;
+    }
+    .summary {
+      display:grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap:12px;
+    }
+    .metric-box {
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:14px;
+      background:#fafafa;
+    }
+    .metric-label {
+      font-size:13px;
+      color:var(--muted);
+      margin-bottom:6px;
+    }
+    .metric-value {
+      font-size:28px;
+      font-weight:800;
+    }
+    .row {
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:end;
+    }
+    .field {
+      display:grid;
+      gap:6px;
+    }
+    .field label {
+      font-size:13px;
+      color:var(--muted);
+    }
+    .field input {
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:10px 12px;
+      font-size:14px;
+      background:#fff;
+      min-width:180px;
+    }
+    .list {
+      display:grid;
+      gap:10px;
+    }
+    .list-item {
+      border:1px solid var(--border);
+      border-radius:12px;
+      padding:12px;
+      background:#fff;
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      align-items:center;
+    }
+    .list-title {
+      font-weight:700;
+    }
+    .list-sub {
+      color:var(--muted);
+      font-size:13px;
+      margin-top:2px;
+    }
+    .tag {
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      border:1px solid var(--border);
+      background:#fff;
+      white-space:nowrap;
+    }
+    .orders {
+      display:grid;
+      gap:12px;
+      margin-top:12px;
+    }
+    .order-card {
+      border:1px solid var(--border);
+      border-radius:14px;
+      padding:14px;
+      background:#fff;
+    }
+    .order-top {
+      display:flex;
+      justify-content:space-between;
+      gap:12px;
+      align-items:flex-start;
+      margin-bottom:8px;
+    }
+    .ticket {
+      font-size:20px;
+      font-weight:800;
+    }
+    .status {
+      padding:6px 10px;
+      border-radius:999px;
+      color:#fff;
+      font-size:12px;
+      font-weight:700;
+      text-transform:uppercase;
+    }
+    .status-pendiente { background:#f59e0b; }
+    .status-preparando { background:#2563eb; }
+    .status-en_camino { background:#7c3aed; }
+    .status-listo_retirar { background:#059669; }
+    .status-entregado { background:#16a34a; }
+    .status-cancelado { background:#dc2626; }
+    .items {
+      margin:10px 0 0 18px;
+      line-height:1.5;
+    }
+    .order-actions {
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-top:12px;
+    }
+    .empty {
+      border:1px dashed var(--border);
+      border-radius:14px;
+      padding:20px;
+      text-align:center;
+      color:var(--muted);
+      background:#fff;
+    }
+    @media (max-width: 1100px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="brand">
+        <img src="{{ logo_url or '/static/logo.png' }}" alt="Logo DEACA POS">
+        <div class="title">
+          <h1>DEACA POS Admin</h1>
+          <div class="subtitle">Historial, métricas y gestión administrativa</div>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <div class="pill" id="adminStatus">Cargando…</div>
+        <a class="btn btn-outline" href="/orders">← Volver a cocina</a>
+      </div>
+    </header>
+
+    <div class="grid">
+      <div class="stack">
+        <section class="card">
+          <h2>Métricas</h2>
+          <div class="summary">
+            <div class="metric-box">
+              <div class="metric-label">Órdenes válidas</div>
+              <div class="metric-value" id="metricTotalOrders">0</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Ingresos acumulados</div>
+              <div class="metric-value" id="metricRevenue">C$0</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <h3>Productos más vendidos</h3>
+          <div class="list" id="topProducts"></div>
+        </section>
+
+        <section class="card">
+          <h3>Productos menos vendidos</h3>
+          <div class="list" id="lowProducts"></div>
+        </section>
+
+        <section class="card">
+          <h3>Distritos que más compran</h3>
+          <div class="list" id="topDistricts"></div>
+        </section>
+
+        <section class="card">
+          <h3>Distritos que menos compran</h3>
+          <div class="list" id="lowDistricts"></div>
+        </section>
+      </div>
+
+      <div class="stack">
+        <section class="card">
+          <h2>Historial por fecha</h2>
+          <div class="row">
+            <div class="field">
+              <label for="historyDate">Fecha</label>
+              <input type="date" id="historyDate">
+            </div>
+            <button class="btn" id="loadHistoryBtn">Consultar</button>
+          </div>
+
+          <div class="summary" style="margin-top:14px;">
+            <div class="metric-box">
+              <div class="metric-label">Pedidos del día</div>
+              <div class="metric-value" id="historyTotalOrders">0</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Ingresos del día</div>
+              <div class="metric-value" id="historyRevenue">C$0</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Delivery</div>
+              <div class="metric-value" id="historyDeliveryCount">0</div>
+            </div>
+            <div class="metric-box">
+              <div class="metric-label">Retiro</div>
+              <div class="metric-value" id="historyPickupCount">0</div>
+            </div>
+          </div>
+
+          <div class="orders" id="historyOrders"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.ADMIN_TOKEN = "{{ admin_token or '' }}";
+  </script>
+  <script src="/static/admin.js"></script>
+</body>
+</html>
