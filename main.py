@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from db import engine, SessionLocal
 from models import Base, Order, OrderItem
 from restaurant_context import get_default_restaurant, get_restaurant_by_slug
+from models_saas import CashSession, CashMovement, CashClosing, RestaurantUser
 
 # =========================
 # ADMIN
@@ -795,6 +796,335 @@ async def admin_delete_cancelled_order(order_id: int, request: Request, token: s
     finally:
         db.close()
 
+@app.get("/admin/api/cash/current")
+def admin_get_current_cash(request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+
+    db = SessionLocal()
+    try:
+        session = (
+            db.query(CashSession)
+            .filter(
+                CashSession.restaurant_id == restaurant.id,
+                CashSession.status == "open",
+            )
+            .order_by(CashSession.id.desc())
+            .first()
+        )
+
+        if not session:
+            return {"ok": True, "session": None, "movements": []}
+
+        movements = (
+            db.query(CashMovement)
+            .filter(CashMovement.cash_session_id == session.id)
+            .order_by(CashMovement.id.asc())
+            .all()
+        )
+
+        return {
+            "ok": True,
+            "session": {
+                "id": session.id,
+                "restaurant_id": session.restaurant_id,
+                "opened_by_user_id": session.opened_by_user_id,
+                "session_number": session.session_number,
+                "opened_at": session.opened_at.isoformat() if session.opened_at else None,
+                "opening_fund_nio": float(session.opening_fund_nio or 0),
+                "opening_fund_usd": float(session.opening_fund_usd or 0),
+                "status": session.status,
+                "notes": session.notes,
+            },
+            "movements": [
+                {
+                    "id": m.id,
+                    "movement_type": m.movement_type,
+                    "sales_channel": m.sales_channel,
+                    "currency": m.currency,
+                    "amount": float(m.amount or 0),
+                    "payment_method": m.payment_method,
+                    "reference_type": m.reference_type,
+                    "reference_id": m.reference_id,
+                    "reference_number": m.reference_number,
+                    "notes": m.notes,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in movements
+            ],
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/api/cash/open")
+async def admin_open_cash(request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+    payload = await request.json()
+
+    pin = str(payload.get("pin", "")).strip()
+    opening_fund_nio = float(payload.get("opening_fund_nio", 0) or 0)
+    opening_fund_usd = float(payload.get("opening_fund_usd", 0) or 0)
+    notes = str(payload.get("notes", "")).strip()
+
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(RestaurantUser)
+            .filter(
+                RestaurantUser.restaurant_id == restaurant.id,
+                RestaurantUser.pin_code == pin,
+                RestaurantUser.is_active == True,
+            )
+            .first()
+        )
+
+        if not user:
+            raise HTTPException(status_code=401, detail="PIN inválido")
+
+        existing = (
+            db.query(CashSession)
+            .filter(
+                CashSession.restaurant_id == restaurant.id,
+                CashSession.status == "open",
+            )
+            .first()
+        )
+
+        if existing:
+            raise HTTPException(status_code=400, detail="ya existe una caja abierta")
+
+        session_number = f"CASH-{restaurant.slug.upper()}-{int(time.time())}"
+
+        session = CashSession(
+            restaurant_id=restaurant.id,
+            opened_by_user_id=user.id,
+            session_number=session_number,
+            opening_fund_nio=opening_fund_nio,
+            opening_fund_usd=opening_fund_usd,
+            status="open",
+            notes=notes or None,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+
+        if opening_fund_nio > 0:
+            db.add(
+                CashMovement(
+                    restaurant_id=restaurant.id,
+                    cash_session_id=session.id,
+                    created_by_user_id=user.id,
+                    movement_type="opening_fund",
+                    sales_channel="local",
+                    currency="NIO",
+                    amount=opening_fund_nio,
+                    payment_method="cash",
+                    reference_type="cash_session",
+                    reference_id=session.id,
+                    reference_number=session.session_number,
+                    notes="Apertura de caja NIO",
+                )
+            )
+
+        if opening_fund_usd > 0:
+            db.add(
+                CashMovement(
+                    restaurant_id=restaurant.id,
+                    cash_session_id=session.id,
+                    created_by_user_id=user.id,
+                    movement_type="opening_fund",
+                    sales_channel="local",
+                    currency="USD",
+                    amount=opening_fund_usd,
+                    payment_method="cash",
+                    reference_type="cash_session",
+                    reference_id=session.id,
+                    reference_number=session.session_number,
+                    notes="Apertura de caja USD",
+                )
+            )
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "session": {
+                "id": session.id,
+                "restaurant_id": session.restaurant_id,
+                "opened_by_user_id": session.opened_by_user_id,
+                "session_number": session.session_number,
+                "opened_at": session.opened_at.isoformat() if session.opened_at else None,
+                "opening_fund_nio": float(session.opening_fund_nio or 0),
+                "opening_fund_usd": float(session.opening_fund_usd or 0),
+                "status": session.status,
+                "notes": session.notes,
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/api/cash/movement")
+async def admin_add_cash_movement(request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+    payload = await request.json()
+
+    pin = str(payload.get("pin", "")).strip()
+    movement_type = str(payload.get("movement_type", "")).strip()
+    sales_channel = str(payload.get("sales_channel", "local")).strip()
+    currency = str(payload.get("currency", "NIO")).strip().upper()
+    amount = float(payload.get("amount", 0) or 0)
+    payment_method = str(payload.get("payment_method", "cash")).strip()
+    reference_type = str(payload.get("reference_type", "")).strip() or None
+    reference_id = payload.get("reference_id")
+    reference_number = str(payload.get("reference_number", "")).strip() or None
+    notes = str(payload.get("notes", "")).strip() or None
+
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(RestaurantUser)
+            .filter(
+                RestaurantUser.restaurant_id == restaurant.id,
+                RestaurantUser.pin_code == pin,
+                RestaurantUser.is_active == True,
+            )
+            .first()
+        )
+
+        if not user:
+            raise HTTPException(status_code=401, detail="PIN inválido")
+
+        session = (
+            db.query(CashSession)
+            .filter(
+                CashSession.restaurant_id == restaurant.id,
+                CashSession.status == "open",
+            )
+            .order_by(CashSession.id.desc())
+            .first()
+        )
+
+        if not session:
+            raise HTTPException(status_code=400, detail="no hay caja abierta")
+
+        movement = CashMovement(
+            restaurant_id=restaurant.id,
+            cash_session_id=session.id,
+            created_by_user_id=user.id,
+            movement_type=movement_type,
+            sales_channel=sales_channel,
+            currency=currency,
+            amount=amount,
+            payment_method=payment_method,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            reference_number=reference_number,
+            notes=notes,
+        )
+        db.add(movement)
+        db.commit()
+        db.refresh(movement)
+
+        return {
+            "ok": True,
+            "movement": {
+                "id": movement.id,
+                "movement_type": movement.movement_type,
+                "sales_channel": movement.sales_channel,
+                "currency": movement.currency,
+                "amount": float(movement.amount or 0),
+                "payment_method": movement.payment_method,
+                "reference_type": movement.reference_type,
+                "reference_id": movement.reference_id,
+                "reference_number": movement.reference_number,
+                "notes": movement.notes,
+                "created_at": movement.created_at.isoformat() if movement.created_at else None,
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/api/cash/close")
+async def admin_close_cash(request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+    payload = await request.json()
+
+    pin = str(payload.get("pin", "")).strip()
+    counted_cash_nio = float(payload.get("counted_cash_nio", 0) or 0)
+    counted_cash_usd = float(payload.get("counted_cash_usd", 0) or 0)
+    notes = str(payload.get("notes", "")).strip() or None
+
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(RestaurantUser)
+            .filter(
+                RestaurantUser.restaurant_id == restaurant.id,
+                RestaurantUser.pin_code == pin,
+                RestaurantUser.is_active == True,
+            )
+            .first()
+        )
+
+        if not user:
+            raise HTTPException(status_code=401, detail="PIN inválido")
+
+        session = (
+            db.query(CashSession)
+            .filter(
+                CashSession.restaurant_id == restaurant.id,
+                CashSession.status == "open",
+            )
+            .order_by(CashSession.id.desc())
+            .first()
+        )
+
+        if not session:
+            raise HTTPException(status_code=400, detail="no hay caja abierta")
+
+        closing_number = f"CLOSE-{restaurant.slug.upper()}-{int(time.time())}"
+
+        closing = CashClosing(
+            restaurant_id=restaurant.id,
+            cash_session_id=session.id,
+            performed_by_user_id=user.id,
+            closing_number=closing_number,
+            closing_scope="combined",
+            opening_fund_nio=float(session.opening_fund_nio or 0),
+            opening_fund_usd=float(session.opening_fund_usd or 0),
+            counted_cash_nio=counted_cash_nio,
+            counted_cash_usd=counted_cash_usd,
+            notes=notes,
+        )
+        db.add(closing)
+
+        session.status = "closed"
+
+        db.commit()
+        db.refresh(closing)
+
+        return {
+            "ok": True,
+            "closing": {
+                "id": closing.id,
+                "closing_number": closing.closing_number,
+                "cash_session_id": closing.cash_session_id,
+                "opening_fund_nio": float(closing.opening_fund_nio or 0),
+                "opening_fund_usd": float(closing.opening_fund_usd or 0),
+                "counted_cash_nio": float(closing.counted_cash_nio or 0),
+                "counted_cash_usd": float(closing.counted_cash_usd or 0),
+                "performed_at": closing.performed_at.isoformat() if closing.performed_at else None,
+            },
+        }
+    finally:
+        db.close()
+
 @app.get("/admin/api/history")
 def admin_history(date: str = "", token: str = ""):
     require_admin_token(token)
@@ -933,6 +1263,22 @@ def orders_page(request: Request):
             "logo_url": restaurant.logo_url if getattr(restaurant, "logo_url", None) else LOGO_URL,
             "restaurant_name": restaurant.brand_name if getattr(restaurant, "brand_name", None) else restaurant.name,
             "restaurant_tagline": restaurant.tagline if getattr(restaurant, "tagline", None) else "Pedidos en tiempo real para cocina y despacho",
+            "restaurant_slug": restaurant.slug,
+        },
+    )
+
+@app.get("/cash")
+def cash_page(request: Request):
+    restaurant = resolve_restaurant(request)
+
+    return templates.TemplateResponse(
+        "cash.html",
+        {
+            "request": request,
+            "admin_token": ADMIN_API_TOKEN,
+            "logo_url": restaurant.logo_url if getattr(restaurant, "logo_url", None) else LOGO_URL,
+            "restaurant_name": restaurant.brand_name if getattr(restaurant, "brand_name", None) else restaurant.name,
+            "restaurant_tagline": restaurant.tagline if getattr(restaurant, "tagline", None) else "Control de caja",
             "restaurant_slug": restaurant.slug,
         },
     )

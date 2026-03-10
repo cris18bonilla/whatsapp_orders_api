@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>{{ restaurant_name or 'Caja' }}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f6f7fb; color: #111; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    .top { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand img { width: 56px; height: 56px; object-fit: contain; border-radius: 12px; background: white; border: 1px solid #ddd; }
+    .brand h1 { margin: 0; font-size: 32px; }
+    .brand p { margin: 4px 0 0; color: #666; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .card { background: white; border: 1px solid #e5e7eb; border-radius: 16px; padding: 18px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .card h2 { margin: 0 0 14px; font-size: 20px; }
+    .row { display: grid; gap: 10px; margin-bottom: 12px; }
+    .row.two { grid-template-columns: 1fr 1fr; }
+    label { font-size: 13px; color: #444; display: block; margin-bottom: 6px; }
+    input, select, textarea, button { width: 100%; box-sizing: border-box; font: inherit; }
+    input, select, textarea { padding: 10px 12px; border-radius: 10px; border: 1px solid #d1d5db; background: white; }
+    textarea { min-height: 88px; resize: vertical; }
+    button { padding: 11px 14px; border: 0; border-radius: 12px; cursor: pointer; font-weight: 600; }
+    .btn-dark { background: #111827; color: white; }
+    .btn-blue { background: #2563eb; color: white; }
+    .btn-green { background: #059669; color: white; }
+    .btn-red { background: #dc2626; color: white; }
+    .muted { color: #6b7280; font-size: 14px; }
+    .status { margin-top: 12px; font-size: 14px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .pill { display: inline-block; padding: 6px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3; font-size: 12px; font-weight: 700; }
+    .list { display: grid; gap: 10px; }
+    .item { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; }
+    .item-top { display: flex; justify-content: space-between; gap: 10px; }
+    .amt { font-weight: 700; }
+    .ok { color: #059669; }
+    .bad { color: #b91c1c; }
+    @media (max-width: 880px) {
+      .grid, .row.two { grid-template-columns: 1fr; }
+      .top { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="brand">
+        <img src="{{ logo_url or '/static/logo.png' }}" alt="{{ restaurant_name or 'Caja' }}">
+        <div>
+          <h1>{{ restaurant_name or 'Caja' }}</h1>
+          <p>{{ restaurant_tagline or 'Control de caja' }}</p>
+        </div>
+      </div>
+      <div class="pill mono" id="restaurantSlugBadge">{{ restaurant_slug or 'deaca' }}</div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>Apertura de caja</h2>
+        <div class="row">
+          <div>
+            <label>PIN</label>
+            <input id="openPin" type="password" placeholder="PIN">
+          </div>
+        </div>
+        <div class="row two">
+          <div>
+            <label>Fondo inicial NIO</label>
+            <input id="openNio" type="number" step="0.01" value="0">
+          </div>
+          <div>
+            <label>Fondo inicial USD</label>
+            <input id="openUsd" type="number" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Notas</label>
+            <textarea id="openNotes" placeholder="Apertura inicial"></textarea>
+          </div>
+        </div>
+        <button class="btn-green" id="openCashBtn">Abrir caja</button>
+      </div>
+
+      <div class="card">
+        <h2>Caja actual</h2>
+        <div id="currentCashBox" class="muted">Cargando...</div>
+        <div class="status" id="cashStatus"></div>
+        <div style="margin-top:12px;">
+          <button class="btn-blue" id="refreshCashBtn">Actualizar</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Registrar movimiento</h2>
+        <div class="row">
+          <div>
+            <label>PIN</label>
+            <input id="movePin" type="password" placeholder="PIN">
+          </div>
+        </div>
+        <div class="row two">
+          <div>
+            <label>Tipo</label>
+            <select id="moveType">
+              <option value="income">Ingreso</option>
+              <option value="expense">Egreso</option>
+            </select>
+          </div>
+          <div>
+            <label>Canal</label>
+            <select id="moveChannel">
+              <option value="local">Local</option>
+              <option value="delivery">Delivery</option>
+              <option value="pickup">Pickup</option>
+              <option value="combined">Combined</option>
+            </select>
+          </div>
+        </div>
+        <div class="row two">
+          <div>
+            <label>Moneda</label>
+            <select id="moveCurrency">
+              <option value="NIO">NIO</option>
+              <option value="USD">USD</option>
+            </select>
+          </div>
+          <div>
+            <label>Monto</label>
+            <input id="moveAmount" type="number" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Notas</label>
+            <textarea id="moveNotes" placeholder="Descripción del movimiento"></textarea>
+          </div>
+        </div>
+        <button class="btn-dark" id="addMovementBtn">Guardar movimiento</button>
+      </div>
+
+      <div class="card">
+        <h2>Cierre de caja</h2>
+        <div class="row">
+          <div>
+            <label>PIN</label>
+            <input id="closePin" type="password" placeholder="PIN">
+          </div>
+        </div>
+        <div class="row two">
+          <div>
+            <label>Efectivo contado NIO</label>
+            <input id="closeNio" type="number" step="0.01" value="0">
+          </div>
+          <div>
+            <label>Efectivo contado USD</label>
+            <input id="closeUsd" type="number" step="0.01" value="0">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Notas</label>
+            <textarea id="closeNotes" placeholder="Cierre de caja"></textarea>
+          </div>
+        </div>
+        <button class="btn-red" id="closeCashBtn">Cerrar caja</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px;">
+      <h2>Movimientos</h2>
+      <div id="movementsList" class="list"></div>
+    </div>
+  </div>
+
+  <script>
+    window.ADMIN_TOKEN = "{{ admin_token or '' }}";
+    window.LOGO_URL = "{{ logo_url or '/static/logo.png' }}";
+    window.RESTAURANT_SLUG = "{{ restaurant_slug or 'deaca' }}";
+  </script>
+  <script src="/static/cash.js"></script>
+</body>
+</html>
