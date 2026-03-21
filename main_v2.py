@@ -2958,7 +2958,20 @@ def v2_api_kitchen_orders(
     channel: Optional[str] = Query(None),
     db: Session = Depends(get_db),
 ):
-    rest = get_restaurant_or_404(db, restaurant)
+    rest = None
+
+    if restaurant:
+        rest = db.query(Restaurant).filter(Restaurant.slug == str(restaurant).strip()).first()
+
+    if not rest:
+        print("⚠️ Kitchen fallback: restaurant not found for slug =", restaurant)
+        rest = db.query(Restaurant).filter(Restaurant.slug == "deaca").first()
+
+    if not rest:
+        return JSONResponse(
+            {"ok": False, "error": "Restaurant not found"},
+            status_code=404
+        )
 
     query = db.query(Order).filter(Order.restaurant_id == rest.id)
 
