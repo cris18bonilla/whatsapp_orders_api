@@ -348,6 +348,10 @@
         <div class="badge" id="lastUpdate">--</div>
         <button class="link-btn" id="fullscreenBtn">Pantalla completa</button>
         <a class="link-btn" id="adminBtn" href="#">Admin</a>
+        <button class="link-btn" id="openCashModalBtn" type="button">Abrir caja</button>
+        <button class="link-btn" id="cashMovementModalBtn" type="button">Movimiento</button>
+        <button class="link-btn" id="closeCashModalBtn" type="button">Cerrar caja</button>
+        <button class="link-btn" id="cashHistoryModalBtn" type="button">Cierres</button>
       </div>
     </header>
 
@@ -395,11 +399,124 @@
     </div>
   </div>
 
-  <script>
-    window.ADMIN_TOKEN = "{{ admin_token or '' }}";
-    window.LOGO_URL = "{{ logo_url or '/static/logo.png' }}";
-    window.RESTAURANT_SLUG = "{{ restaurant_slug or 'deaca' }}";
-  </script>
+<div id="cashModalBackdrop" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9998;"></div>
+
+<div id="payOrderModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(620px,92vw);background:#fff;padding:20px;border-radius:16px;z-index:9999;">
+  <h3>Pagar orden</h3>
+  <div id="payOrderSummary"></div>
+  <div style="margin-top:12px;">
+    <label>PIN</label>
+    <input id="payPin" type="password">
+  </div>
+  <div style="margin-top:12px;">
+    <label>Método de pago</label>
+    <select id="payMethod">
+      <option value="cash">Efectivo</option>
+      <option value="card">Tarjeta</option>
+      <option value="transfer">Transferencia</option>
+      <option value="credit">Crédito</option>
+    </select>
+  </div>
+  <div style="margin-top:12px;">
+    <label>Monto recibido</label>
+    <input id="payAmountReceived" type="number" step="1" value="0">
+  </div>
+  <div style="margin-top:12px;">
+    <label>Referencia</label>
+    <input id="payReference" type="text">
+  </div>
+  <div style="margin-top:12px;">
+    <label>Notas</label>
+    <textarea id="payNotes"></textarea>
+  </div>
+  <div style="margin-top:14px;display:flex;gap:10px;">
+    <button id="confirmPayOrderBtn" type="button">Confirmar pago</button>
+    <button id="closePayOrderModalBtn" type="button">Cerrar</button>
+  </div>
+</div>
+
+<div id="openCashModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(560px,92vw);background:#fff;padding:20px;border-radius:16px;z-index:9999;">
+  <h3>Abrir caja</h3>
+  <label>PIN</label>
+  <input id="openCashPin" type="password">
+  <label>Fondo inicial NIO</label>
+  <input id="openCashNio" type="number" step="1" value="0">
+  <label>Fondo inicial USD</label>
+  <input id="openCashUsd" type="number" step="1" value="0">
+  <label>Notas</label>
+  <textarea id="openCashNotes"></textarea>
+  <div style="margin-top:14px;display:flex;gap:10px;">
+    <button id="confirmOpenCashBtn" type="button">Abrir</button>
+    <button id="closeOpenCashModalBtn" type="button">Cerrar</button>
+  </div>
+</div>
+
+<div id="cashMovementModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(560px,92vw);background:#fff;padding:20px;border-radius:16px;z-index:9999;">
+  <h3>Movimiento manual</h3>
+  <label>PIN</label>
+  <input id="movementPin" type="password">
+  <label>Tipo</label>
+  <select id="movementType">
+    <option value="income">Ingreso</option>
+    <option value="expense">Egreso</option>
+  </select>
+  <label>Canal</label>
+  <select id="movementChannel">
+    <option value="local">Local</option>
+    <option value="delivery">Delivery</option>
+    <option value="pickup">Pickup</option>
+    <option value="combined">Combined</option>
+  </select>
+  <label>Moneda</label>
+  <select id="movementCurrency">
+    <option value="NIO">NIO</option>
+    <option value="USD">USD</option>
+  </select>
+  <label>Monto</label>
+  <input id="movementAmount" type="number" step="1" value="0">
+  <label>Notas</label>
+  <textarea id="movementNotes"></textarea>
+  <div style="margin-top:14px;display:flex;gap:10px;">
+    <button id="confirmMovementBtn" type="button">Guardar</button>
+    <button id="closeMovementModalBtn" type="button">Cerrar</button>
+  </div>
+</div>
+
+<div id="closeCashModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(760px,94vw);background:#fff;padding:20px;border-radius:16px;z-index:9999;max-height:88vh;overflow:auto;">
+  <h3>Cierre de caja</h3>
+  <div id="closeCashPreviewBox"></div>
+  <label>PIN</label>
+  <input id="closeCashPin" type="password">
+  <label>Efectivo contado NIO</label>
+  <input id="closeCashNio" type="number" step="1" value="0">
+  <label>Efectivo contado USD</label>
+  <input id="closeCashUsd" type="number" step="1" value="0">
+  <label>Notas</label>
+  <textarea id="closeCashNotes"></textarea>
+  <div style="margin-top:14px;display:flex;gap:10px;">
+    <button id="confirmCloseCashBtn" type="button">Cerrar caja</button>
+    <button id="closeCloseCashModalBtn" type="button">Cerrar</button>
+  </div>
+</div>
+
+<div id="cashHistoryModal" style="display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(860px,96vw);background:#fff;padding:20px;border-radius:16px;z-index:9999;max-height:88vh;overflow:auto;">
+  <h3>Historial de cierres</h3>
+  <label>Fecha</label>
+  <input id="cashHistoryDate" type="date">
+  <div style="margin-top:12px;display:flex;gap:10px;">
+    <button id="loadCashHistoryBtn" type="button">Consultar</button>
+    <button id="closeCashHistoryModalBtn" type="button">Cerrar</button>
+  </div>
+  <div id="cashHistoryList" style="margin-top:16px;"></div>
+</div> 
+
+<script>
+window.ADMIN_TOKEN = "{{ admin_token or '' }}";
+window.LOGO_URL = "{{ logo_url or '/static/logo.png' }}";
+window.RESTAURANT_SLUG = "{{ restaurant_slug or 'deaca' }}";
+</script>
+
+<script src="/static/orders.js"></script>
 
 </body>
 </html>

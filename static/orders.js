@@ -1,3 +1,4 @@
+console.log("ORDERS_JS_VERSION_10MAR_830AM")
 const deliveryGrid = document.getElementById("deliveryGrid");
 const pickupGrid = document.getElementById("pickupGrid");
 
@@ -10,6 +11,38 @@ const pickupCountEl = document.getElementById("pickupCount");
 const filterStatusEl = document.getElementById("filterStatus");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
 const adminBtn = document.getElementById("adminBtn");
+const cashModalBackdrop = document.getElementById("cashModalBackdrop");
+
+const openCashModalBtn = document.getElementById("openCashModalBtn");
+const cashMovementModalBtn = document.getElementById("cashMovementModalBtn");
+const closeCashModalBtn = document.getElementById("closeCashModalBtn");
+const cashHistoryModalBtn = document.getElementById("cashHistoryModalBtn");
+
+const payOrderModal = document.getElementById("payOrderModal");
+const payOrderSummary = document.getElementById("payOrderSummary");
+const confirmPayOrderBtn = document.getElementById("confirmPayOrderBtn");
+const closePayOrderModalBtn = document.getElementById("closePayOrderModalBtn");
+
+const openCashModal = document.getElementById("openCashModal");
+
+const confirmOpenCashBtn = document.getElementById("confirmOpenCashBtn");
+const closeOpenCashModalBtn = document.getElementById("closeOpenCashModalBtn");
+
+const cashMovementModal = document.getElementById("cashMovementModal");
+const confirmMovementBtn = document.getElementById("confirmMovementBtn");
+const closeMovementModalBtn = document.getElementById("closeMovementModalBtn");
+
+const closeCashModal = document.getElementById("closeCashModal");
+const closeCashPreviewBox = document.getElementById("closeCashPreviewBox");
+const confirmCloseCashBtn = document.getElementById("confirmCloseCashBtn");
+const closeCloseCashModalBtn = document.getElementById("closeCloseCashModalBtn");
+
+const cashHistoryModal = document.getElementById("cashHistoryModal");
+const loadCashHistoryBtn = document.getElementById("loadCashHistoryBtn");
+const closeCashHistoryModalBtn = document.getElementById("closeCashHistoryModalBtn");
+const cashHistoryList = document.getElementById("cashHistoryList");
+
+let currentPayOrderId = null;
 const token = window.ADMIN_TOKEN || "";
 const restaurantSlug = window.RESTAURANT_SLUG || "deaca";
 
@@ -63,6 +96,16 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+function openModal(modalEl) {
+  if (cashModalBackdrop) cashModalBackdrop.style.display = "block";
+  if (modalEl) modalEl.style.display = "block";
+}
+
+function closeModal(modalEl) {
+  if (modalEl) modalEl.style.display = "none";
+  if (cashModalBackdrop) cashModalBackdrop.style.display = "none";
 }
 
 function playNewOrderSound() {
@@ -122,7 +165,7 @@ function createActionButtons(order) {
   } else if (order.status === "cancelado") {
     extraAction = `<button class="btn btn-outline delete-cancelled-btn" data-order-id="${order.id}">Eliminar cancelado</button>`;
   }
-
+  
   return `
     <div class="actions">
       <button class="btn btn-pending" data-order-id="${order.id}" data-status="pendiente">Pendiente</button>
@@ -134,7 +177,14 @@ function createActionButtons(order) {
       }
       <button class="btn btn-delivered" data-order-id="${order.id}" data-status="entregado">Entregado</button>
       <button class="btn btn-cancelled" data-order-id="${order.id}" data-status="cancelado">Cancelado</button>
-      <button class="btn btn-outline print-btn" data-ticket="${order.ticket}">🖨 Imprimir</button>
+      <button class="btn btn-outline print-btn" data-ticket="${order.ticket}">🖨 Imprimir</butto>
+     
+      ${order.payment_status !== "paid" ? `
+      <button class="btn btn-pay pay-order-btn" data-order-id="${order.id}">
+      💳 Pagar
+      </button>
+      ` : ""}
+
       ${extraAction}
     </div>
   `;
@@ -184,6 +234,170 @@ function updateCounts(deliveryOrders, pickupOrders) {
   pickupCountEl.textContent = `${pickupOrders.length} pedido(s)`;
 }
 
+async function openCashSessionFromModal() {
+  const body = {
+    pin: document.getElementById("openCashPin").value,
+    opening_fund_nio: parseFloat(document.getElementById("openCashNio").value || "0"),
+    opening_fund_usd: parseFloat(document.getElementById("openCashUsd").value || "0"),
+    notes: document.getElementById("openCashNotes").value || ""
+  };
+
+  const res = await fetch(`/admin/api/cash/open?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  closeModal(openCashModal);
+  await fetchOrders();
+}
+
+async function addManualCashMovementFromModal() {
+  const body = {
+    pin: document.getElementById("movementPin").value,
+    movement_type: document.getElementById("movementType").value,
+    sales_channel: document.getElementById("movementChannel").value,
+    currency: document.getElementById("movementCurrency").value,
+    amount: parseFloat(document.getElementById("movementAmount").value || "0"),
+    payment_method: "cash",
+    notes: document.getElementById("movementNotes").value || ""
+  };
+
+  const res = await fetch(`/admin/api/cash/movement?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  closeModal(cashMovementModal);
+  await fetchOrders();
+}
+
+async function loadClosingPreview() {
+  const res = await fetch(`/admin/api/cash/closing-preview?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+
+  if (!data.preview) {
+    closeCashPreviewBox.innerHTML = `<div>No hay caja abierta.</div>`;
+    return;
+  }
+
+  const p = data.preview;
+  closeCashPreviewBox.innerHTML = `
+    <div><strong>Sesión:</strong> ${p.session_number || "-"}</div>
+    <div><strong>Apertura NIO:</strong> ${p.opening_fund_nio ?? 0}</div>
+    <div><strong>Apertura USD:</strong> ${p.opening_fund_usd ?? 0}</div>
+    <div><strong>Ventas efectivo NIO:</strong> ${p.cash_sales_nio ?? 0}</div>
+    <div><strong>Ventas efectivo USD:</strong> ${p.cash_sales_usd ?? 0}</div>
+    <div><strong>Tarjeta NIO:</strong> ${p.card_sales_nio ?? 0}</div>
+    <div><strong>Tarjeta USD:</strong> ${p.card_sales_usd ?? 0}</div>
+    <div><strong>Transferencias NIO:</strong> ${p.transfer_sales_nio ?? 0}</div>
+    <div><strong>Crédito NIO:</strong> ${p.credit_sales_nio ?? 0}</div>
+    <div><strong>Impuestos:</strong> ${p.tax_amount_nio ?? 0}</div>
+    <div><strong>Egresos NIO:</strong> ${p.expenses_nio ?? 0}</div>
+    <div><strong>Efectivo esperado NIO:</strong> ${p.expected_cash_nio ?? 0}</div>
+    <div><strong>Efectivo esperado USD:</strong> ${p.expected_cash_usd ?? 0}</div>
+  `;
+}
+
+async function closeCashSessionFromModal() {
+  const body = {
+    pin: document.getElementById("closeCashPin").value,
+    counted_cash_nio: parseFloat(document.getElementById("closeCashNio").value || "0"),
+    counted_cash_usd: parseFloat(document.getElementById("closeCashUsd").value || "0"),
+    notes: document.getElementById("closeCashNotes").value || ""
+  };
+
+  const res = await fetch(`/admin/api/cash/close?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+
+  closeModal(closeCashModal);
+  await fetchOrders();
+}
+
+function openPayModalForOrder(orderId) {
+  const order = (window.lastOrders || []).find(o => Number(o.id) === Number(orderId));
+  if (!order) return;
+
+  currentPayOrderId = order.id;
+
+  const subtotal = Number(order.subtotal || 0);
+  const deliveryFee = Number(order.delivery_fee || 0);
+  const taxAmount = Number(order.tax_amount || 0);
+  const total = Number(order.total || 0);
+
+  payOrderSummary.innerHTML = `
+    <div><strong>Ticket:</strong> ${order.ticket || "-"}</div>
+    <div><strong>Cliente:</strong> ${order.customer_name || "-"}</div>
+    <div><strong>Subtotal:</strong> ${subtotal}</div>
+    <div><strong>Delivery:</strong> ${deliveryFee}</div>
+    <div><strong>Impuesto:</strong> ${taxAmount}</div>
+    <div><strong>Total:</strong> ${total}</div>
+  `;
+
+  document.getElementById("payAmountReceived").value = total || 0;
+  openModal(payOrderModal);
+}
+
+async function confirmPayOrder() {
+  if (!currentPayOrderId) return;
+
+  const body = {
+    pin: document.getElementById("payPin").value,
+    payment_method: document.getElementById("payMethod").value,
+    amount_received: parseFloat(document.getElementById("payAmountReceived").value || "0"),
+    payment_reference: document.getElementById("payReference").value || "",
+    notes: document.getElementById("payNotes").value || ""
+  };
+
+  const res = await fetch(`/admin/api/orders/${currentPayOrderId}/pay?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+
+  closeModal(payOrderModal);
+  currentPayOrderId = null;
+  await fetchOrders();
+}
+
+async function loadCashHistory() {
+  const date = document.getElementById("cashHistoryDate").value || "";
+  const res = await fetch(`/admin/api/cash/history?restaurant=${encodeURIComponent(restaurantSlug)}&token=${encodeURIComponent(token)}&date=${encodeURIComponent(date)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+
+  const closings = data.closings || [];
+  if (!closings.length) {
+    cashHistoryList.innerHTML = `<div>No hay cierres para esa fecha.</div>`;
+    return;
+  }
+
+  cashHistoryList.innerHTML = closings.map(c => `
+    <div style="border:1px solid #ddd;border-radius:12px;padding:12px;margin-bottom:10px;">
+      <div><strong>${c.closing_number}</strong></div>
+      <div>${c.performed_at || "-"}</div>
+      <div>Realizó: ${c.performed_by_name_snapshot || "-"}</div>
+      <div>Efectivo NIO contado: ${c.counted_cash_nio ?? 0}</div>
+      <div>Diferencia NIO: ${c.difference_nio ?? 0}</div>
+    </div>
+  `).join("");
+}
+
 async function updateOrderStatus(orderId, status) {
   try {
     statusEl.textContent = "Actualizando estado…";
@@ -220,7 +434,7 @@ async function hideDeliveredOrder(orderId) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pin }),
     });    
-{
+
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || ("HTTP " + res.status));
@@ -286,7 +500,79 @@ function bindActionButtons() {
       await deleteCancelledOrder(orderId);
     });
   });
-}
+
+  document.addEventListener("click", async (e) => {
+    const payBtn = e.target.closest(".pay-order-btn");
+    if (payBtn) {
+      openPayModalForOrder(payBtn.getAttribute("data-order-id"));
+    }
+  });
+
+    if (openCashModalBtn) openCashModalBtn.addEventListener("click", () => openModal(openCashModal));
+    if (cashMovementModalBtn) cashMovementModalBtn.addEventListener("click", () => openModal(cashMovementModal));
+    if (closeCashModalBtn) closeCashModalBtn.addEventListener("click", async () => {
+      await loadClosingPreview();
+      openModal(closeCashModal);
+    });
+    if (cashHistoryModalBtn) cashHistoryModalBtn.addEventListener("click", () => openModal(cashHistoryModal));
+
+  if (confirmOpenCashBtn)
+    confirmOpenCashBtn.addEventListener("click", async () => {
+      try {
+        await openCashSessionFromModal();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+  if (confirmMovementBtn)
+    confirmMovementBtn.addEventListener("click", async () => {
+      try {
+        await addManualCashMovementFromModal();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+  if (confirmCloseCashBtn)
+    confirmCloseCashBtn.addEventListener("click", async () => {
+      try {
+        await closeCashSessionFromModal();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+  if (confirmPayOrderBtn)
+    confirmPayOrderBtn.addEventListener("click", async () => {
+      try {
+        await confirmPayOrder();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+
+  if (loadCashHistoryBtn)
+    loadCashHistoryBtn.addEventListener("click", async () => {
+      try {
+        await loadCashHistory();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+    if (closePayOrderModalBtn) closePayOrderModalBtn.addEventListener("click", () => closeModal(payOrderModal));
+    if (closeOpenCashModalBtn) closeOpenCashModalBtn.addEventListener("click", () => closeModal(openCashModal));
+    if (closeMovementModalBtn) closeMovementModalBtn.addEventListener("click", () => closeModal(cashMovementModal));
+    if (closeCloseCashModalBtn) closeCloseCashModalBtn.addEventListener("click", () => closeModal(closeCashModal));
+    if (closeCashHistoryModalBtn) closeCashHistoryModalBtn.addEventListener("click", () => closeModal(cashHistoryModal));
+    if (cashModalBackdrop) cashModalBackdrop.addEventListener("click", () => {
+      closeModal(payOrderModal);
+      closeModal(openCashModal);
+      closeModal(cashMovementModal);
+      closeModal(closeCashModal);
+      closeModal(cashHistoryModal);
+    });
+  }
 
 function detectNewOrders(orders) {
   const currentIds = new Set(orders.map((o) => o.id));
@@ -372,10 +658,6 @@ function printTicket(order) {
         window.focus();
         window.print();
       }
-    <\/script>
-  </body>
-  </html>
-  `;
 
   const win = window.open("", "", "width=420,height=700");
   win.document.write(html);
@@ -525,3 +807,11 @@ if (adminBtn) {
 
 fetchOrders();
 setInterval(fetchOrders, 3000);
+   <script>
+      window.onload = function() {
+        window.focus();
+        window.print();
+      }
+    <\/script>
+  </body>
+  </html>

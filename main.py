@@ -2,20 +2,72 @@ import os
 import time
 import re
 import uuid
+import json
+
 from datetime import datetime
 from typing import Dict, Any, Optional, List, Tuple
 
 import requests
+
 from sqlalchemy import func as sa_func, desc, asc
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 
-from db import engine, SessionLocal
-from models import Base, Order, OrderItem
-from restaurant_context import get_default_restaurant, get_restaurant_by_slug
+from db import Base,  engine, SessionLocal
+
+from restaurant_context import (
+    get_default_restaurant,
+    get_restaurant_by_slug,
+    get_restaurant_setting_float,
+    get_restaurant_setting_bool,
+    get_restaurant_setting_str,
+)
 from models_saas import CashSession, CashMovement, CashClosing, RestaurantUser
+
+# CORE
+
+# SEGURIDAD
+from models.security_models import (
+    RestaurantUser,
+    Permission,
+    RolePermission,
+    UserPermission,
+    UserSession,
+    ActivityLog
+)
+
+# VENTAS
+from models.sales_models import Order, OrderItem, OrderPayment
+
+# CAJA
+from models.cash_models import CashSession as NewCashSession, CashMovement as NewCashMovement
+
+# INVENTARIO
+from models.inventory_models import (
+    Product,
+    InventoryItem,
+    Recipe,
+    InventoryMovement
+)
+
+# RRHH
+from models.hr_models import (
+    Employee,
+    EmployeeAttendance,
+    EmployeeVacation,
+    SalaryAdvance,
+    EmployeeSettlement
+)
+
+# ANALYTICS
+from models.analytics_models import (
+    DailyMetric,
+    ProductSalesMetric,
+    UserSalesMetric,
+    DriverMetric
+)
 
 # =========================
 # ADMIN
@@ -32,7 +84,7 @@ CLIENT_TICKET: Dict[str, str] = {}
 # =========================
 # APP
 # =========================
-app = FastAPI(title="DEACA POS")
+app = FastAPI(title="NICALIA POS SUITE")
 
 def resolve_restaurant(request: Request):
     slug = request.query_params.get("restaurant")
@@ -44,6 +96,42 @@ def resolve_restaurant(request: Request):
 
     return get_default_restaurant()
 default_restaurant = get_default_restaurant()
+
+def build_invoice_number(db, restaurant, order):
+    prefix = get_restaurant_setting_str(db, restaurant.id, "invoice_prefix", restaurant.slug.upper())
+    date_part = datetime.utcnow().strftime("%Y%m%d")
+    return f"{prefix}-{date_part}-{order.id:06d}"
+
+
+def get_sales_channel_from_order(order):
+    mode = (order.delivery_mode or "").strip().lower()
+    if mode == "delivery":
+        return "delivery"
+    if mode in {"retiro", "pickup", "retiro en local"}:
+        return "pickup"
+    return "local"
+
+
+def calculate_order_payment_totals(db, restaurant, order):
+    subtotal = int(order.subtotal or 0)
+    delivery_fee = int(order.delivery_fee or 0)
+
+    tax_enabled = get_restaurant_setting_bool(db, restaurant.id, "tax_enabled", True)
+    tax_rate = get_restaurant_setting_float(db, restaurant.id, "tax_rate", 15.0)
+    tax_apply_on_delivery = get_restaurant_setting_bool(db, restaurant.id, "tax_apply_on_delivery", False)
+
+    taxable_base = subtotal + (delivery_fee if tax_apply_on_delivery else 0)
+    tax_amount = round(taxable_base * tax_rate / 100) if tax_enabled else 0
+    grand_total = subtotal + delivery_fee + tax_amount
+
+    return {
+        "subtotal": subtotal,
+        "delivery_fee": delivery_fee,
+        "tax_enabled": tax_enabled,
+        "tax_rate": tax_rate,
+        "tax_amount": int(tax_amount),
+        "grand_total": int(grand_total),
+    }
 
 DEFAULT_RESTAURANT_ID = default_restaurant.id if default_restaurant else None
 DEFAULT_RESTAURANT_SLUG = default_restaurant.slug if default_restaurant else "deaca"
@@ -322,6 +410,17 @@ def serialize_order(order: Order) -> Dict[str, Any]:
         "total": int(order.total),
         "created_at": order.created_at.isoformat() if getattr(order, "created_at", None) else None,
         "items": items,
+        "payment_status": order.payment_status,
+        "payment_method": order.payment_method,
+        "tax_rate_snapshot": float(order.tax_rate_snapshot or 0) if order.tax_rate_snapshot is not None else None,
+        "tax_amount": int(order.tax_amount or 0),
+        "amount_received": int(order.amount_received or 0) if order.amount_received is not None else None,
+        "change_amount": int(order.change_amount or 0),
+        "invoice_number": order.invoice_number,
+        "payment_reference": order.payment_reference,
+        "paid_at": order.paid_at.isoformat() if order.paid_at else None,
+        "paid_by_user_id": order.paid_by_user_id,
+        "cash_session_id": order.cash_session_id,
     }
 
 
@@ -728,6 +827,128 @@ async def admin_update_order_status(order_id: int, request: Request, token: str 
     finally:
         db.close()
 
+@app.post("/admin/api/orders/{order_id}/pay")
+async def admin_pay_order(order_id: int, request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+    payload = await request.json()
+
+    pin = str(payload.get("pin", "")).strip()
+    payment_method = str(payload.get("payment_method", "")).strip().lower()
+    amount_received = int(float(payload.get("amount_received", 0) or 0))
+    payment_reference = str(payload.get("payment_reference", "")).strip() or None
+    notes = str(payload.get("notes", "")).strip() or None
+
+    if payment_method not in {"cash", "card", "transfer", "credit"}:
+        raise HTTPException(status_code=400, detail="payment_method inválido")
+
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(RestaurantUser)
+            .filter(
+                RestaurantUser.restaurant_id == restaurant.id,
+                RestaurantUser.pin_code == pin,
+                RestaurantUser.is_active == True,
+            )
+            .first()
+        )
+
+        if not user:
+            raise HTTPException(status_code=401, detail="PIN inválido")
+
+        cash_session = (
+            db.query(CashSession)
+            .filter(
+                CashSession.restaurant_id == restaurant.id,
+                CashSession.status == "open",
+            )
+            .order_by(CashSession.id.desc())
+            .first()
+        )
+
+        if not cash_session:
+            raise HTTPException(status_code=400, detail="no hay caja abierta")
+
+        order = (
+            db.query(Order)
+            .filter(
+                Order.id == order_id,
+                Order.restaurant_id == restaurant.id,
+            )
+            .first()
+        )
+
+        if not order:
+            raise HTTPException(status_code=404, detail="order not found")
+
+        if order.status == "cancelado":
+            raise HTTPException(status_code=400, detail="no se puede cobrar una orden cancelada")
+
+        if order.payment_status == "paid":
+            raise HTTPException(status_code=400, detail="la orden ya está pagada")
+
+        totals = calculate_order_payment_totals(db, restaurant, order)
+        grand_total = totals["grand_total"]
+
+        if payment_method == "cash":
+            if amount_received < grand_total:
+                raise HTTPException(status_code=400, detail="monto recibido insuficiente")
+            change_amount = amount_received - grand_total
+        else:
+            amount_received = grand_total
+            change_amount = 0
+
+        invoice_number = build_invoice_number(db, restaurant, order)
+
+        order.tax_rate_snapshot = totals["tax_rate"] if totals["tax_enabled"] else 0
+        order.tax_amount = totals["tax_amount"]
+        order.total = grand_total
+        order.payment_status = "paid"
+        order.payment_method = payment_method
+        order.amount_received = amount_received
+        order.change_amount = change_amount
+        order.invoice_number = invoice_number
+        order.payment_reference = payment_reference
+        order.paid_at = datetime.utcnow()
+        order.paid_by_user_id = user.id
+        order.cash_session_id = cash_session.id
+
+        sales_channel = get_sales_channel_from_order(order)
+
+        movement = CashMovement(
+            restaurant_id=restaurant.id,
+            cash_session_id=cash_session.id,
+            created_by_user_id=user.id,
+            movement_type="sale",
+            sales_channel=sales_channel,
+            currency="NIO",
+            amount=grand_total,
+            payment_method=payment_method,
+            reference_type="order",
+            reference_id=order.id,
+            reference_number=invoice_number,
+            notes=notes or f"Pago de orden {order.ticket}",
+        )
+        db.add(movement)
+
+        db.commit()
+        db.refresh(order)
+
+        return {
+            "ok": True,
+            "order": serialize_order(order),
+            "payment": {
+                "invoice_number": invoice_number,
+                "grand_total": grand_total,
+                "amount_received": amount_received,
+                "change_amount": change_amount,
+                "payment_method": payment_method,
+            },
+        }
+    finally:
+        db.close()
+
 @app.post("/admin/api/orders/{order_id}/hide")
 async def admin_hide_order(order_id: int, request: Request, token: str = ""):
     require_admin_token(token)
@@ -856,6 +1077,155 @@ def admin_get_current_cash(request: Request, token: str = ""):
     finally:
         db.close()
 
+@app.get("/admin/api/cash/closing-preview")
+def admin_cash_closing_preview(request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+
+    db = SessionLocal()
+    try:
+        cash_session = (
+            db.query(CashSession)
+            .filter(
+                CashSession.restaurant_id == restaurant.id,
+                CashSession.status == "open",
+            )
+            .order_by(CashSession.id.desc())
+            .first()
+        )
+
+        if not cash_session:
+            return {"ok": True, "session": None, "preview": None}
+
+        movements = (
+            db.query(CashMovement)
+            .filter(CashMovement.cash_session_id == cash_session.id)
+            .all()
+        )
+
+        paid_orders = (
+            db.query(Order)
+            .filter(
+                Order.restaurant_id == restaurant.id,
+                Order.cash_session_id == cash_session.id,
+                Order.payment_status == "paid",
+            )
+            .all()
+        )
+
+        cash_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "cash" and m.currency == "NIO")
+        cash_sales_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "cash" and m.currency == "USD")
+        card_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "card" and m.currency == "NIO")
+        card_sales_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "card" and m.currency == "USD")
+        transfer_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "transfer" and m.currency == "NIO")
+        credit_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "credit" and m.currency == "NIO")
+        manual_income_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "income" and m.currency == "NIO")
+        manual_income_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "income" and m.currency == "USD")
+        expenses_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "expense" and m.currency == "NIO")
+        expenses_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "expense" and m.currency == "USD")
+        tax_amount_nio = sum(int(o.tax_amount or 0) for o in paid_orders)
+
+        expected_cash_nio = float(cash_session.opening_fund_nio or 0) + cash_sales_nio + manual_income_nio - expenses_nio
+        expected_cash_usd = float(cash_session.opening_fund_usd or 0) + cash_sales_usd + manual_income_usd - expenses_usd
+
+        preview = {
+            "session_id": cash_session.id,
+            "session_number": cash_session.session_number,
+            "opening_fund_nio": float(cash_session.opening_fund_nio or 0),
+            "opening_fund_usd": float(cash_session.opening_fund_usd or 0),
+            "cash_sales_nio": cash_sales_nio,
+            "cash_sales_usd": cash_sales_usd,
+            "card_sales_nio": card_sales_nio,
+            "card_sales_usd": card_sales_usd,
+            "transfer_sales_nio": transfer_sales_nio,
+            "credit_sales_nio": credit_sales_nio,
+            "manual_income_nio": manual_income_nio,
+            "manual_income_usd": manual_income_usd,
+            "expenses_nio": expenses_nio,
+            "expenses_usd": expenses_usd,
+            "tax_amount_nio": tax_amount_nio,
+            "expected_cash_nio": expected_cash_nio,
+            "expected_cash_usd": expected_cash_usd,
+        }
+
+        return {"ok": True, "session": cash_session.id, "preview": preview}
+    finally:
+        db.close()
+
+@app.get("/admin/api/cash/history")
+def admin_cash_history(request: Request, token: str = "", date: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+
+    db = SessionLocal()
+    try:
+        query = db.query(CashClosing).filter(CashClosing.restaurant_id == restaurant.id)
+
+        if date:
+            query = query.filter(sa_func.date(CashClosing.performed_at) == date)
+
+        closings = query.order_by(CashClosing.id.desc()).all()
+
+        return {
+            "ok": True,
+            "closings": [
+                {
+                    "id": c.id,
+                    "closing_number": c.closing_number,
+                    "performed_at": c.performed_at.isoformat() if c.performed_at else None,
+                    "performed_by_name_snapshot": c.performed_by_name_snapshot,
+                    "cash_sales_nio": float(c.cash_sales_nio or 0),
+                    "cash_sales_usd": float(c.cash_sales_usd or 0),
+                    "card_sales_nio": float(c.card_sales_nio or 0),
+                    "card_sales_usd": float(c.card_sales_usd or 0),
+                    "transfer_sales_nio": float(c.transfer_sales_nio or 0),
+                    "credit_sales_nio": float(c.credit_sales_nio or 0),
+                    "tax_amount_nio": float(c.tax_amount_nio or 0),
+                    "expenses_nio": float(c.expenses_nio or 0),
+                    "counted_cash_nio": float(c.counted_cash_nio or 0),
+                    "counted_cash_usd": float(c.counted_cash_usd or 0),
+                    "difference_nio": float(c.difference_nio or 0),
+                    "difference_usd": float(c.difference_usd or 0),
+                }
+                for c in closings
+            ],
+        }
+    finally:
+        db.close()
+
+@app.get("/admin/api/cash/closing/{closing_id}")
+def admin_cash_closing_detail(closing_id: int, request: Request, token: str = ""):
+    require_admin_token(token)
+    restaurant = resolve_restaurant(request)
+
+    db = SessionLocal()
+    try:
+        closing = (
+            db.query(CashClosing)
+            .filter(
+                CashClosing.id == closing_id,
+                CashClosing.restaurant_id == restaurant.id,
+            )
+            .first()
+        )
+
+        if not closing:
+            raise HTTPException(status_code=404, detail="closing not found")
+
+        preview = json.loads(closing.preview_json) if closing.preview_json else {}
+
+        return {
+            "ok": True,
+            "closing": {
+                "id": closing.id,
+                "closing_number": closing.closing_number,
+                "performed_at": closing.performed_at.isoformat() if closing.performed_at else None,
+                "performed_by_name_snapshot": closing.performed_by_name_snapshot,
+                "preview": preview,
+            },
+        }
+    finally:
+        db.close()
 
 @app.post("/admin/api/cash/open")
 async def admin_open_cash(request: Request, token: str = ""):
@@ -1048,7 +1418,6 @@ async def admin_add_cash_movement(request: Request, token: str = ""):
     finally:
         db.close()
 
-
 @app.post("/admin/api/cash/close")
 async def admin_close_cash(request: Request, token: str = ""):
     require_admin_token(token)
@@ -1075,7 +1444,7 @@ async def admin_close_cash(request: Request, token: str = ""):
         if not user:
             raise HTTPException(status_code=401, detail="PIN inválido")
 
-        session = (
+        cash_session = (
             db.query(CashSession)
             .filter(
                 CashSession.restaurant_id == restaurant.id,
@@ -1085,26 +1454,102 @@ async def admin_close_cash(request: Request, token: str = ""):
             .first()
         )
 
-        if not session:
+        if not cash_session:
             raise HTTPException(status_code=400, detail="no hay caja abierta")
+
+        movements = (
+            db.query(CashMovement)
+            .filter(CashMovement.cash_session_id == cash_session.id)
+            .all()
+        )
+
+        paid_orders = (
+            db.query(Order)
+            .filter(
+                Order.restaurant_id == restaurant.id,
+                Order.cash_session_id == cash_session.id,
+                Order.payment_status == "paid",
+            )
+            .all()
+        )
+
+        cash_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "cash" and m.currency == "NIO")
+        cash_sales_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "cash" and m.currency == "USD")
+
+        card_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "card" and m.currency == "NIO")
+        card_sales_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "card" and m.currency == "USD")
+
+        transfer_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "transfer" and m.currency == "NIO")
+        credit_sales_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "sale" and m.payment_method == "credit" and m.currency == "NIO")
+
+        manual_income_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "income" and m.currency == "NIO")
+        manual_income_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "income" and m.currency == "USD")
+
+        expenses_nio = sum(float(m.amount or 0) for m in movements if m.movement_type == "expense" and m.currency == "NIO")
+        expenses_usd = sum(float(m.amount or 0) for m in movements if m.movement_type == "expense" and m.currency == "USD")
+
+        tax_amount_nio = sum(int(o.tax_amount or 0) for o in paid_orders)
+
+        expected_cash_nio = float(cash_session.opening_fund_nio or 0) + cash_sales_nio + manual_income_nio - expenses_nio
+        expected_cash_usd = float(cash_session.opening_fund_usd or 0) + cash_sales_usd + manual_income_usd - expenses_usd
+
+        difference_nio = counted_cash_nio - expected_cash_nio
+        difference_usd = counted_cash_usd - expected_cash_usd
 
         closing_number = f"CLOSE-{restaurant.slug.upper()}-{int(time.time())}"
 
+        preview = {
+            "restaurant_id": restaurant.id,
+            "restaurant_slug": restaurant.slug,
+            "session_id": cash_session.id,
+            "session_number": cash_session.session_number,
+            "opening_fund_nio": float(cash_session.opening_fund_nio or 0),
+            "opening_fund_usd": float(cash_session.opening_fund_usd or 0),
+            "cash_sales_nio": cash_sales_nio,
+            "cash_sales_usd": cash_sales_usd,
+            "card_sales_nio": card_sales_nio,
+            "card_sales_usd": card_sales_usd,
+            "transfer_sales_nio": transfer_sales_nio,
+            "credit_sales_nio": credit_sales_nio,
+            "manual_income_nio": manual_income_nio,
+            "manual_income_usd": manual_income_usd,
+            "expenses_nio": expenses_nio,
+            "expenses_usd": expenses_usd,
+            "tax_amount_nio": tax_amount_nio,
+            "expected_cash_nio": expected_cash_nio,
+            "expected_cash_usd": expected_cash_usd,
+            "counted_cash_nio": counted_cash_nio,
+            "counted_cash_usd": counted_cash_usd,
+            "difference_nio": difference_nio,
+            "difference_usd": difference_usd,
+        }
+
         closing = CashClosing(
             restaurant_id=restaurant.id,
-            cash_session_id=session.id,
+            cash_session_id=cash_session.id,
             performed_by_user_id=user.id,
             closing_number=closing_number,
             closing_scope="combined",
-            opening_fund_nio=float(session.opening_fund_nio or 0),
-            opening_fund_usd=float(session.opening_fund_usd or 0),
+            performed_by_name_snapshot=user.name,
+            cash_sales_nio=cash_sales_nio,
+            cash_sales_usd=cash_sales_usd,
+            card_sales_nio=card_sales_nio,
+            card_sales_usd=card_sales_usd,
+            transfer_sales_nio=transfer_sales_nio,
+            credit_sales_nio=credit_sales_nio,
+            tax_amount_nio=tax_amount_nio,
+            expenses_nio=expenses_nio,
+            opening_fund_nio=float(cash_session.opening_fund_nio or 0),
+            opening_fund_usd=float(cash_session.opening_fund_usd or 0),
             counted_cash_nio=counted_cash_nio,
             counted_cash_usd=counted_cash_usd,
-            notes=notes,
+            difference_nio=difference_nio,
+            difference_usd=difference_usd,
+            preview_json=json.dumps(preview),
         )
         db.add(closing)
 
-        session.status = "closed"
+        cash_session.status = "closed"
 
         db.commit()
         db.refresh(closing)
@@ -1114,12 +1559,8 @@ async def admin_close_cash(request: Request, token: str = ""):
             "closing": {
                 "id": closing.id,
                 "closing_number": closing.closing_number,
-                "cash_session_id": closing.cash_session_id,
-                "opening_fund_nio": float(closing.opening_fund_nio or 0),
-                "opening_fund_usd": float(closing.opening_fund_usd or 0),
-                "counted_cash_nio": float(closing.counted_cash_nio or 0),
-                "counted_cash_usd": float(closing.counted_cash_usd or 0),
                 "performed_at": closing.performed_at.isoformat() if closing.performed_at else None,
+                "preview": preview,
             },
         }
     finally:

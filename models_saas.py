@@ -885,6 +885,7 @@ class CashClosing(Base):
     cash_sales_nio = Column(Float, nullable=False, default=0, server_default="0")
     cash_sales_usd = Column(Float, nullable=False, default=0, server_default="0")
     card_sales_nio = Column(Float, nullable=False, default=0, server_default="0")
+    card_sales_usd = Column(Float, nullable=False, default=0, server_default="0")
     transfer_sales_nio = Column(Float, nullable=False, default=0, server_default="0")
     credit_sales_nio = Column(Float, nullable=False, default=0, server_default="0")
 

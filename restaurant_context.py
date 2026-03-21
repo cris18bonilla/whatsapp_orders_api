@@ -27,6 +27,34 @@ def get_restaurant_setting(db, restaurant_id: int, key: str, default=None):
     )
     return row.setting_value if row and row.setting_value is not None else default
 
+def get_restaurant_setting_str(db, restaurant_id: int, key: str, default=None):
+    value = get_restaurant_setting(db, restaurant_id, key, default)
+    return value if value is not None else default
+
+
+def get_restaurant_setting_float(db, restaurant_id: int, key: str, default=0.0):
+    value = get_restaurant_setting(db, restaurant_id, key, default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def get_restaurant_setting_int(db, restaurant_id: int, key: str, default=0):
+    value = get_restaurant_setting(db, restaurant_id, key, default)
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def get_restaurant_setting_bool(db, restaurant_id: int, key: str, default=False):
+    value = get_restaurant_setting(db, restaurant_id, key, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "si", "sí", "on"}
 
 def is_restaurant_module_enabled(db, restaurant_id: int, module_code: str) -> bool:
     row = (
