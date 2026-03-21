@@ -281,6 +281,16 @@ def get_restaurant_or_404(
 ) -> Restaurant:
     restaurant = None
 
+def get_restaurant_by_phone_number_id(db: Session, phone_number_id: str):
+    if not phone_number_id:
+        return None
+
+    return (
+        db.query(Restaurant)
+        .filter(Restaurant.whatsapp_phone_number_id == str(phone_number_id))
+        .first()
+    )
+
     if restaurant_slug:
         restaurant = (
             db.query(Restaurant)
@@ -4358,6 +4368,8 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         value = change.get("value") or {}
         messages = value.get("messages") or []
         contacts = value.get("contacts") or []
+        metadata = value.get("metadata") or {}
+        phone_number_id = str(metadata.get("phone_number_id") or "").strip()
 
         if not messages:
             return JSONResponse({"ok": True})
@@ -4371,7 +4383,16 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         if contacts:
             profile_name = (((contacts[0].get("profile") or {}).get("name")) or "").strip()
 
-        rest = get_restaurant_or_404(db, "deaca")
+        rest = get_restaurant_by_phone_number_id(db, phone_number_id)
+
+        if not rest:
+            print("⚠️ No restaurant by phone_number_id:", phone_number_id)
+            rest = db.query(Restaurant).filter(Restaurant.slug == "deaca").first()
+
+        if not rest:
+            print("❌ CRITICAL: No restaurant found at all")
+            return JSONResponse({"ok": False, "error": "Restaurant not found"}, status_code=500)
+
         wa = get_tenant_whatsapp_config(db, rest.id)
         msgs = wa.get("messages") or {}
 
