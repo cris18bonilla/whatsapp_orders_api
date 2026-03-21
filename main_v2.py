@@ -3913,6 +3913,21 @@ def build_whatsapp_main_menu_text(db: Session, rest) -> str:
 
     return "\n".join(lines).strip()
 
+def build_whatsapp_main_menu_sections(db: Session, rest):
+    items = get_enabled_main_menu_items(db, rest.id)
+    rows = []
+
+    for idx, item in enumerate(items, start=1):
+        rows.append({
+            "id": f"main::{item.get('id')}",
+            "title": str(item.get("title") or f"Opción {idx}")[:24],
+            "description": str(item.get("description") or "")[:72],
+        })
+
+    return [{
+        "title": "Opciones principales",
+        "rows": rows
+    }]
 
 def build_whatsapp_category_menu_text(db: Session, rest) -> str:
     wa = get_tenant_whatsapp_config(db, rest.id)
@@ -3933,6 +3948,21 @@ def build_whatsapp_category_menu_text(db: Session, rest) -> str:
 
     return "\n".join(lines).strip()
 
+def build_whatsapp_category_menu_sections(db: Session, rest):
+    items = get_enabled_category_menu_items(db, rest.id)
+    rows = []
+
+    for idx, item in enumerate(items, start=1):
+        rows.append({
+            "id": f"cat::{item.get('id')}",
+            "title": str(item.get("title") or f"Categoría {idx}")[:24],
+            "description": str(item.get("description") or "")[:72],
+        })
+
+    return [{
+        "title": "Categorías",
+        "rows": rows
+    }]
 
 def resolve_main_menu_selection(db: Session, rest_id: int, text: str):
     items = get_enabled_main_menu_items(db, rest_id)
@@ -3997,6 +4027,49 @@ def build_products_for_category_text(db: Session, rest, category_title: str) -> 
 
     lines.append("")
     lines.append("Responde con el ID del producto o con 'menu' para volver.")
+    return "\n".join(lines).strip()
+
+def get_visible_products_for_category(db: Session, rest, category_title: str):
+    visibility_map = get_whatsapp_catalog_visibility_map(db, rest.id)
+
+    rows = (
+        db.query(Product)
+        .filter(
+            Product.restaurant_id == rest.id,
+            Product.is_active == True,  # noqa: E712
+            Product.category == category_title,
+        )
+        .order_by(Product.name.asc())
+        .all()
+    )
+
+    return [p for p in rows if is_product_visible_in_whatsapp(visibility_map, p.id)]
+
+
+def build_products_for_category_sections(db: Session, rest, category_title: str):
+    visible_rows = get_visible_products_for_category(db, rest, category_title)
+
+    rows = []
+    for p in visible_rows[:10]:
+        rows.append({
+            "id": f"prod::{p.id}",
+            "title": str(p.name or "")[:24],
+            "description": f"C${float(p.price or 0):.2f}"[:72],
+        })
+
+    return [{
+        "title": str(category_title)[:24],
+        "rows": rows
+    }]
+
+
+def build_product_caption(product: Product) -> str:
+    name = product.name or "Producto"
+    desc = product.description or ""
+    price = f"C${float(product.price or 0):.2f}"
+    lines = [f"{name}", price]
+    if desc:
+        lines.append(desc)
     return "\n".join(lines).strip()
 
 @app.get("/v2/api/whatsapp/catalog")
@@ -4377,6 +4450,160 @@ def send_whatsapp_text(to_phone: str, body: str):
     except Exception as e:
         return {"ok": False, "detail": str(e)}
 
+def send_whatsapp_buttons(to_phone: str, body: str, buttons: list):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return {"ok": False, "detail": "Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID"}
+
+    valid_buttons = []
+    for b in (buttons or [])[:3]:
+        bid = str(b.get("id") or "").strip()[:256]
+        title = str(b.get("title") or "").strip()[:20]
+        if bid and title:
+            valid_buttons.append({
+                "type": "reply",
+                "reply": {
+                    "id": bid,
+                    "title": title,
+                }
+            })
+
+    if not valid_buttons:
+        return send_whatsapp_text(to_phone, body)
+
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {"text": body[:1024]},
+            "action": {
+                "buttons": valid_buttons
+            }
+        }
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        return {
+            "ok": resp.ok,
+            "status_code": resp.status_code,
+            "data": resp.json() if resp.content else {},
+        }
+    except Exception as e:
+        return {"ok": False, "detail": str(e)}
+
+
+def send_whatsapp_list(to_phone: str, body: str, button_text: str, sections: list, header_text: str = None, footer_text: str = None):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return {"ok": False, "detail": "Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID"}
+
+    clean_sections = []
+    for section in (sections or [])[:10]:
+        title = str(section.get("title") or "").strip()[:24]
+        rows = []
+        for row in (section.get("rows") or [])[:10]:
+            rid = str(row.get("id") or "").strip()[:200]
+            rtitle = str(row.get("title") or "").strip()[:24]
+            rdesc = str(row.get("description") or "").strip()[:72]
+            if rid and rtitle:
+                row_data = {
+                    "id": rid,
+                    "title": rtitle,
+                }
+                if rdesc:
+                    row_data["description"] = rdesc
+                rows.append(row_data)
+
+        if rows:
+            section_data = {"rows": rows}
+            if title:
+                section_data["title"] = title
+            clean_sections.append(section_data)
+
+    if not clean_sections:
+        return send_whatsapp_text(to_phone, body)
+
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    interactive = {
+        "type": "list",
+        "body": {"text": body[:1024]},
+        "action": {
+            "button": (button_text or "Ver opciones")[:20],
+            "sections": clean_sections,
+        }
+    }
+
+    if header_text:
+        interactive["header"] = {
+            "type": "text",
+            "text": str(header_text)[:60]
+        }
+
+    if footer_text:
+        interactive["footer"] = {
+            "text": str(footer_text)[:60]
+        }
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "interactive",
+        "interactive": interactive
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        return {
+            "ok": resp.ok,
+            "status_code": resp.status_code,
+            "data": resp.json() if resp.content else {},
+        }
+    except Exception as e:
+        return {"ok": False, "detail": str(e)}
+
+
+def send_whatsapp_image(to_phone: str, image_url: str, caption: str = ""):
+    if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return {"ok": False, "detail": "Faltan WHATSAPP_TOKEN o PHONE_NUMBER_ID"}
+
+    if not image_url:
+        return send_whatsapp_text(to_phone, caption)
+
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_phone,
+        "type": "image",
+        "image": {
+            "link": image_url,
+            "caption": caption[:1024]
+        }
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        return {
+            "ok": resp.ok,
+            "status_code": resp.status_code,
+            "data": resp.json() if resp.content else {},
+        }
+    except Exception as e:
+        return {"ok": False, "detail": str(e)}
 
 @app.get("/webhook/whatsapp")
 async def whatsapp_verify(request: Request):
@@ -4444,6 +4671,7 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
         mtype = msg.get("type") or ""
         text = ""
         selected_text = ""
+        interactive_id = ""
         location = None
 
         if mtype == "text":
@@ -4455,14 +4683,18 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
             itype = inter.get("type")
 
             if itype == "button_reply":
-                selected_text = (((inter.get("button_reply") or {}).get("title")) or "").strip()
+                reply_data = inter.get("button_reply") or {}
+                selected_text = str(reply_data.get("title") or "").strip()
+                interactive_id = str(reply_data.get("id") or "").strip()
                 if not selected_text:
-                    selected_text = (((inter.get("button_reply") or {}).get("id")) or "").strip()
+                    selected_text = interactive_id
 
             elif itype == "list_reply":
-                selected_text = (((inter.get("list_reply") or {}).get("title")) or "").strip()
+                reply_data = inter.get("list_reply") or {}
+                selected_text = str(reply_data.get("title") or "").strip()
+                interactive_id = str(reply_data.get("id") or "").strip()
                 if not selected_text:
-                    selected_text = (((inter.get("list_reply") or {}).get("id")) or "").strip()
+                    selected_text = interactive_id
 
         elif mtype == "location":
             loc = msg.get("location") or {}
@@ -4474,6 +4706,54 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
             }
 
         incoming = (selected_text or text or "").strip().lower()
+  
+        if interactive_id.startswith("add::"):
+            prod_id_raw = interactive_id.split("add::", 1)[1].strip()
+            if prod_id_raw.isdigit():
+                add_product_to_whatsapp_cart(
+                    db,
+                    rest,
+                    from_id,
+                    int(prod_id_raw),
+                    1,
+                )
+                set_whatsapp_state(db, rest.id, from_id, "editing_cart")
+                db.commit()
+
+                summary = build_whatsapp_cart_summary(db, rest, from_id)
+                send_whatsapp_buttons(
+                    from_id,
+                    summary["text"],
+                    [
+                        {"id": "flow::delivery", "title": "Delivery"},
+                        {"id": "flow::pickup", "title": "Retiro"},
+                        {"id": "go::menu", "title": "Menú"},
+                    ]
+                )
+                return JSONResponse({"ok": True, "action": "product_added_button"})
+
+        if interactive_id == "go::menu":
+            set_whatsapp_state(db, rest.id, from_id, "category_menu")
+            db.commit()
+            send_whatsapp_list(
+                from_id,
+                (msgs.get("choose_category") or "Elegí categoría").strip(),
+                "Ver categorías",
+                build_whatsapp_category_menu_sections(db, rest),
+                header_text="Menú",
+            )
+            return JSONResponse({"ok": True, "action": "go_menu"})
+
+        if interactive_id == "go::cart":
+            summary = build_whatsapp_cart_summary(db, rest, from_id)
+            send_whatsapp_text(from_id, summary["text"])
+            return JSONResponse({"ok": True, "action": "go_cart"})
+
+        if interactive_id == "flow::delivery":
+            incoming = "delivery"
+
+        if interactive_id == "flow::pickup":
+            incoming = "pickup"
 
         # ===== comandos globales =====
         if incoming in {"hola", "inicio", "start"}:
@@ -4481,13 +4761,25 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
                 "customer_name": profile_name or session_data.get("customer_name", "")
             })
             db.commit()
-            send_whatsapp_text(from_id, build_whatsapp_main_menu_text(db, rest))
+            send_whatsapp_list(
+                from_id,
+                (msgs.get("choose_option") or "Elegí una opción:").strip(),
+                "Ver opciones",
+                build_whatsapp_main_menu_sections(db, rest),
+                header_text=(msgs.get("welcome") or "Bienvenido").strip(),
+            )
             return JSONResponse({"ok": True, "action": "main_menu"})
 
         if incoming == "menu":
             set_whatsapp_state(db, rest.id, from_id, "category_menu")
             db.commit()
-            send_whatsapp_text(from_id, build_whatsapp_category_menu_text(db, rest))
+            send_whatsapp_list(
+                from_id,
+                (msgs.get("choose_category") or "Elegí categoría").strip(),
+                "Ver categorías",
+                build_whatsapp_category_menu_sections(db, rest),
+                header_text="Menú",
+            )
             return JSONResponse({"ok": True, "action": "category_menu"})
 
         if incoming == "carrito":
@@ -4508,7 +4800,16 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
 
         # ===== selección menú principal =====
         if state == "main_menu":
-            selected = resolve_main_menu_selection(db, rest.id, selected_text or text)
+            selected = None
+
+            if interactive_id.startswith("main::"):
+                selected_key = interactive_id.split("main::", 1)[1].strip()
+                for item in get_enabled_main_menu_items(db, rest.id):
+                    if str(item.get("id") or "").strip() == selected_key:
+                        selected = item
+                        break
+            else:
+                selected = resolve_main_menu_selection(db, rest.id, selected_text or text)
             if selected:
                 selected_id = selected.get("id")
 
@@ -4542,7 +4843,16 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
 
         # ===== selección categoría =====
         if state == "category_menu":
-            selected_category = resolve_category_selection(db, rest.id, selected_text or text)
+            selected_category = None
+
+            if interactive_id.startswith("cat::"):
+                selected_key = interactive_id.split("cat::", 1)[1].strip()
+                for item in get_enabled_category_menu_items(db, rest.id):
+                    if str(item.get("id") or "").strip() == selected_key:
+                        selected_category = item
+                        break
+            else:
+                selected_category = resolve_category_selection(db, rest.id, selected_text or text)
             if selected_category:
                 category_title = selected_category.get("title") or ""
                 set_whatsapp_state(db, rest.id, from_id, "product_menu", {
@@ -4550,10 +4860,61 @@ async def webhook(request: Request, db: Session = Depends(get_db)):
                     "selected_category_title": category_title,
                 })
                 db.commit()
-                send_whatsapp_text(from_id, build_products_for_category_text(db, rest, category_title))
+                sections = build_products_for_category_sections(db, rest, category_title)
+
+                if sections and sections[0].get("rows"):
+                    send_whatsapp_list(
+                        from_id,
+                        (msgs.get("choose_product") or "Tocá para elegir").strip(),
+                        "Ver productos",
+                        sections,
+                        header_text=category_title,
+                    )
+                else:
+                    send_whatsapp_text(from_id, f"{category_title}\n\nNo hay productos visibles en esta categoría.")
                 return JSONResponse({"ok": True, "action": "product_menu"})
 
         # ===== agregar producto =====
+        if interactive_id.startswith("prod::"):
+            prod_id_raw = interactive_id.split("prod::", 1)[1].strip()
+
+            if prod_id_raw.isdigit():
+                product = (
+                    db.query(Product)
+                    .filter(
+                        Product.restaurant_id == rest.id,
+                        Product.id == int(prod_id_raw),
+                        Product.is_active == True,  # noqa: E712
+                    )
+                    .first()
+                )
+
+                if product:
+                    session_data = get_whatsapp_session(db, rest.id, from_id)
+                    session_data["selected_product_id"] = product.id
+                    session_data["state"] = "product_detail"
+                    session_data["updated_at"] = datetime.utcnow().isoformat()
+                    set_whatsapp_session(db, rest.id, from_id, session_data)
+                    db.commit()
+
+                    caption = build_product_caption(product)
+
+                    if product.image_url:
+                        send_whatsapp_image(from_id, product.image_url, caption)
+                    else:
+                        send_whatsapp_text(from_id, caption)
+
+                    send_whatsapp_buttons(
+                        from_id,
+                        "¿Qué deseas hacer?",
+                        [
+                            {"id": f"add::{product.id}", "title": "Agregar"},
+                            {"id": "go::menu", "title": "Menú"},
+                            {"id": "go::cart", "title": "Carrito"},
+                        ]
+                    )
+                    return JSONResponse({"ok": True, "action": "product_detail"})
+
         parsed = parse_product_command(selected_text or text)
         if parsed:
             add_product_to_whatsapp_cart(
