@@ -3450,6 +3450,25 @@ def set_whatsapp_session(db: Session, rest_id: int, phone: str, data: dict):
     key = get_whatsapp_session_key(phone)
     set_restaurant_setting_value(db, rest_id, key, data or {})
 
+def set_whatsapp_state(db: Session, rest_id: int, phone: str, state: str, extra: dict = None):
+    session_data = get_whatsapp_session(db, rest_id, phone) or {}
+
+    session_data["phone"] = phone
+    session_data["state"] = state
+    session_data["updated_at"] = datetime.utcnow().isoformat()
+
+    if extra and isinstance(extra, dict):
+        session_data.update(extra)
+
+    set_whatsapp_session(db, rest_id, phone, session_data)
+    return session_data
+
+def clear_whatsapp_cart(db: Session, rest_id: int, phone: str):
+    session_data = get_whatsapp_session(db, rest_id, phone) or {}
+    session_data["cart"] = []
+    session_data["updated_at"] = datetime.utcnow().isoformat()
+    set_whatsapp_session(db, rest_id, phone, session_data)
+    return session_data
 
 def get_whatsapp_cart(db: Session, rest_id: int, phone: str) -> dict:
     key = get_whatsapp_cart_key(phone)
