@@ -5476,6 +5476,29 @@ def v2_admin(
 
     <div id="deliveryStatus" class="status-box"></div>
   </div>
+<div class="panel">
+  <h2>Catálogo Maestro</h2>
+
+  <div class="form-grid">
+    <input id="adminCatalogName" class="input" placeholder="Nombre del producto" />
+    <input id="adminCatalogCategory" class="input" placeholder="Categoría" />
+    <input id="adminCatalogPrice" class="input" type="number" step="0.01" placeholder="Precio" />
+    <input id="adminCatalogImage" class="input" placeholder="Image URL" />
+  </div>
+
+  <div style="margin-top:10px;">
+    <textarea id="adminCatalogDescription" class="input" style="min-height:80px;" placeholder="Descripción"></textarea>
+  </div>
+
+  <div class="toolbar" style="margin-top:12px;">
+    <button class="btn dark" onclick="createAdminCatalogProduct()">Crear producto</button>
+    <button class="btn light" onclick="loadAdminCatalogProducts()">Recargar catálogo</button>
+  </div>
+
+  <div id="adminCatalogCategoriesBox" class="status-box" style="margin-top:14px;"></div>
+  <div id="adminCatalogProductsBox" class="list-grid" style="margin-top:14px;"></div>
+  <div id="adminCatalogStatus" class="status-box" style="margin-top:14px;"></div>
+</div>
   </div>
     
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -6428,6 +6451,168 @@ def v2_admin(
         `).join("");
       }}
 
+      async function loadAdminCatalogProducts() {{
+        const res = await fetch(`/v2/api/admin/products?restaurant=${{adminRestaurantSlug}}`);
+        const data = await res.json();
+
+        if (!res.ok) {{
+          alert(data.detail || "No se pudo cargar el catálogo.");
+          return;
+        }}
+
+        const items = data.items || [];
+        const box = document.getElementById("adminCatalogProductsBox");
+        const catBox = document.getElementById("adminCatalogCategoriesBox");
+        const status = document.getElementById("adminCatalogStatus");
+
+        const categories = [...new Set(items.map(x => (x.category || "Sin categoría")).filter(Boolean))];
+
+        catBox.textContent = categories.length
+          ? `Categorías detectadas: ${{categories.join(", ")}}`
+          : "No hay categorías detectadas aún.";
+
+        box.innerHTML = items.length ? items.map(p => `
+          <div class="card">
+            <div class="card-title">${{p.name || "Producto"}}</div>
+            <div class="muted">Categoría: ${{p.category || "Sin categoría"}}</div>
+            <div class="muted">Precio: C$${{Number(p.price || 0).toFixed(2)}}</div>
+            <div class="muted">Activo: ${{p.is_active ? "Sí" : "No"}}</div>
+            <div class="muted">Visible WhatsApp: ${{p.whatsapp_visible ? "Sí" : "No"}}</div>
+            <div class="muted">Imagen: ${{p.image_url ? "Sí" : "No"}}</div>
+
+            <div class="mini-actions">
+              <button class="mini-btn" onclick="editAdminCatalogProduct(${{p.id}})">Editar</button>
+              <button class="mini-btn" onclick="toggleAdminCatalogProduct(${{p.id}})">
+                ${{p.is_active ? "Desactivar" : "Activar"}}
+              </button>
+              <button class="mini-btn" onclick="deleteAdminCatalogProduct(${{p.id}})">Eliminar</button>
+            </div>
+          </div>
+        `).join("") : `<div class="muted">No hay productos cargados.</div>`;
+
+        status.textContent = `Productos en catálogo: ${{items.length}}`;
+      }}
+
+      async function createAdminCatalogProduct() {{
+        const payload = {{
+          name: document.getElementById("adminCatalogName")?.value || "",
+          category: document.getElementById("adminCatalogCategory")?.value || "",
+          price: Number(document.getElementById("adminCatalogPrice")?.value || 0),
+          image_url: document.getElementById("adminCatalogImage")?.value || "",
+          description: document.getElementById("adminCatalogDescription")?.value || "",
+          is_active: true
+        }};
+
+        const res = await fetch(`/v2/api/products?restaurant=${{adminRestaurantSlug}}`, {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify(payload)
+        }});
+
+        const data = await res.json();
+
+        if (!res.ok) {{
+          alert(data.detail || "No se pudo crear el producto.");
+          return;
+        }}
+
+        document.getElementById("adminCatalogName").value = "";
+        document.getElementById("adminCatalogCategory").value = "";
+        document.getElementById("adminCatalogPrice").value = "";
+        document.getElementById("adminCatalogImage").value = "";
+        document.getElementById("adminCatalogDescription").value = "";
+
+        await loadAdminCatalogProducts();
+      }}
+
+      async function toggleAdminCatalogProduct(productId) {{
+        const res = await fetch(`/v2/api/products/${{productId}}/toggle?restaurant=${{adminRestaurantSlug}}`, {{
+          method: "PATCH"
+        }});
+
+        const data = await res.json();
+
+        if (!res.ok) {{
+          alert(data.detail || "No se pudo cambiar el estado del producto.");
+          return;
+        }}
+
+        await loadAdminCatalogProducts();
+      }}
+
+      async function deleteAdminCatalogProduct(productId) {{
+        const ok = confirm("¿Eliminar este producto?");
+        if (!ok) return;
+
+        const res = await fetch(`/v2/api/products/${{productId}}?restaurant=${{adminRestaurantSlug}}`, {{
+          method: "DELETE"
+        }});
+
+        const data = await res.json();
+
+        if (!res.ok) {{
+          alert(data.detail || "No se pudo eliminar el producto.");
+          return;
+        }}
+
+        await loadAdminCatalogProducts();
+      }}
+
+      async function editAdminCatalogProduct(productId) {{
+        const res = await fetch(`/v2/api/admin/products?restaurant=${{adminRestaurantSlug}}`);
+        const data = await res.json();
+
+        if (!res.ok) {{
+          alert(data.detail || "No se pudo cargar el producto.");
+          return;
+        }}
+
+        const item = (data.items || []).find(x => Number(x.id) === Number(productId));
+        if (!item) {{
+          alert("Producto no encontrado.");
+          return;
+        }}
+
+        const newName = prompt("Nombre del producto:", item.name || "");
+        if (newName === null) return;
+
+        const newCategory = prompt("Categoría:", item.category || "");
+        if (newCategory === null) return;
+
+        const newPrice = prompt("Precio:", item.price || 0);
+        if (newPrice === null) return;
+
+        const newImage = prompt("Image URL:", item.image_url || "");
+        if (newImage === null) return;
+
+        const newDesc = prompt("Descripción:", item.description || "");
+        if (newDesc === null) return;
+
+        const payload = {{
+          name: newName,
+          category: newCategory,
+          price: Number(newPrice || 0),
+          image_url: newImage,
+          description: newDesc,
+          is_active: !!item.is_active
+        }};
+
+        const upd = await fetch(`/v2/api/products/${{productId}}?restaurant=${{adminRestaurantSlug}}`, {{
+          method: "PUT",
+          headers: {{ "Content-Type": "application/json" }},
+          body: JSON.stringify(payload)
+        }});
+
+        const updData = await upd.json();
+
+        if (!upd.ok) {{
+          alert(updData.detail || "No se pudo editar el producto.");
+          return;
+        }}
+
+        await loadAdminCatalogProducts();
+      }} 
+
     (async function bootAdmin() {{
       try {{
         await loadZones();
@@ -6435,6 +6620,7 @@ def v2_admin(
         await loadTenantConfig();
         await loadWhatsAppProducts();
         await loadDeliveryConfig();
+        await loadAdminCatalogProducts();
         setTimeout(previewWhatsAppMenu, 300);
       }} catch (e) {{
         console.error("bootAdmin error:", e);
