@@ -4043,25 +4043,45 @@ def get_visible_products_for_category(db: Session, rest, category_title: str):
         .all()
     )
 
-    return [p for p in rows if is_product_visible_in_whatsapp(visibility_map, p.id)]
+    visible_rows = []
+    for p in rows:
+        visible = is_product_visible_in_whatsapp(visibility_map, p.id)
+        print(
+            "WA_PRODUCT_CHECK",
+            {
+                "product_id": p.id,
+                "name": p.name,
+                "category": p.category,
+                "visible": visible,
+                "image_url": p.image_url,
+            }
+        )
+        if visible:
+            visible_rows.append(p)
 
+    return visible_rows
 
 def build_products_for_category_sections(db: Session, rest, category_title: str):
     visible_rows = get_visible_products_for_category(db, rest, category_title)
 
     rows = []
     for p in visible_rows[:10]:
+        price_txt = f"C${float(p.price or 0):.2f}"
+        desc_parts = [price_txt]
+
+        if p.description:
+            desc_parts.append(str(p.description)[:40])
+
         rows.append({
             "id": f"prod::{p.id}",
-            "title": str(p.name or "")[:24],
-            "description": f"C${float(p.price or 0):.2f}"[:72],
+            "title": str(p.name or "Producto")[:24],
+            "description": " · ".join(desc_parts)[:72],
         })
 
     return [{
-        "title": str(category_title)[:24],
+        "title": str(category_title or "Productos")[:24],
         "rows": rows
     }]
-
 
 def build_product_caption(product: Product) -> str:
     name = product.name or "Producto"
