@@ -5068,6 +5068,16 @@ def v2_admin(
     db: Session = Depends(get_db),
 ):
     rest = get_restaurant_or_404(db, restaurant)
+    rest = None
+
+    if restaurant:
+        rest = db.query(Restaurant).filter(Restaurant.slug == str(restaurant).strip()).first()
+
+    if not rest:
+        rest = db.query(Restaurant).filter(Restaurant.slug == "deaca").first()
+
+    if not rest:
+        return HTMLResponse("<h1>No se encontró ningún restaurante</h1>", status_code=404)
 
     body = f"""
     <link
@@ -5252,7 +5262,7 @@ def v2_admin(
       <div class="admin-top">
         <div class="admin-brand">
           <h1>Admin</h1>
-          <p>{rest.name} · {rest.slug}</p>
+          <p>{(rest.name or "Restaurante")} / {(rest.slug or "sin-slug")}</p>
         </div>
 
         <div class="toolbar">
